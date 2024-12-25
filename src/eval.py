@@ -15,7 +15,9 @@ import torch
 import yaml
 
 import models
-from samplers import get_data_sampler, sample_transformation
+from samplers import get_data_sampler, sample_transformation,rand_select_sampler
+
+
 from tasks import get_task_sampler
 """
 测试数据中xs_p 策略
@@ -482,3 +484,5 @@ if __name__ == "__main__":
         for run_id in tqdm(os.listdir(task_dir)):
             run_path = os.path.join(run_dir, task, run_id)
             metrics = get_run_metrics(run_path)
+
+            
