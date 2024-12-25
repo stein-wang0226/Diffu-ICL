@@ -1,0 +1,18 @@
+inherit:
+    - base.yaml
+
+training:
+    task: linear_regression   # 仍然属于 linear  task 减少代码改动
+    data: uniform
+    curriculum:
+        points:
+            start: 11
+            end: 41
+            inc: 2
+            interval: 2000
+
+
+out_dir: ../models12/linear_regression_uniform  # 输出路径改变
+
+wandb:
+    name: "linear_regression_uniform_standard" # wandb name 改变

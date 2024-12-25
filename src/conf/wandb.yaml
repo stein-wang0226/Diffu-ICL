@@ -1,0 +1,5 @@
+wandb:
+    project: in-context-training
+    entity: baojian-fudan-university
+    notes: yuxiang_test
+    log_every_steps: 100
