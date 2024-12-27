@@ -33,7 +33,6 @@ def set_seed(seed):
 # 设置随机种子
 set_seed(42)
 
-
 def train_step(model, xs, ys, optimizer, loss_func): # 单个批次（batch）的前向传播、损失计算、反向传播和优化器更新
     optimizer.zero_grad()
     output = model(xs, ys)
@@ -74,6 +73,7 @@ def train(model, args):
     if args.training.If_two_distribution:
         data_sampler1 = get_data_sampler("gaussian" , n_dims=n_dims)
         data_sampler2 = get_data_sampler("uniform" , n_dims=n_dims)
+
     task_sampler = get_task_sampler(
         args.training.task,
         n_dims,

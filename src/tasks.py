@@ -88,6 +88,7 @@ class LinearRegression(Task):
                 self.w_b = torch.rand(self.b_size, self.n_dims, 1) * 2 - 1
             else:
                 raise ValueError("Invalid w_type. Must be 'gaussion' or 'uniform'.")
+
         elif seeds is not None:
             self.w_b = torch.zeros(self.b_size, self.n_dims, 1)
             generator = torch.Generator()
@@ -98,8 +99,9 @@ class LinearRegression(Task):
                     self.w_b[i] = torch.randn(self.n_dims, 1, generator=generator)
                 elif self.w_type == "uniform":
                     self.w_b[i] = torch.rand(self.n_dims, 1, generator=generator) * 2 - 1
+                # todo 添加 w1+w2
                 else:
-                    raise ValueError("Invalid w_type. Must be 'gaussion' or 'uniform'.")
+                    raise ValueError("Invalid w_type. Must be 'gaussian' or 'uniform'.")
         else:
             assert "w" in pool_dict
             indices = torch.randperm(len(pool_dict["w"]))[:batch_size]

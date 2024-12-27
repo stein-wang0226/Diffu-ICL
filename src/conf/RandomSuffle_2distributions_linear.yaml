@@ -2,6 +2,7 @@ inherit:
     - base.yaml
 
 training:
+
     task: linear_regression   # 仍然属于 linear  task 减少代码改动
     train_steps: 1000001
     If_two_distribution: True

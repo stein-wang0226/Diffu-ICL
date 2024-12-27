@@ -237,7 +237,11 @@ def eval_model( #
     """
 
     assert num_eval_examples % batch_size == 0
+    # todo data sampler
+
     data_sampler = get_data_sampler(data_name, n_dims, **data_sampler_kwargs)
+
+    # todo   (w1+w2)x
     task_sampler = get_task_sampler(
         task_name, n_dims, batch_size, **task_sampler_kwargs
     )
