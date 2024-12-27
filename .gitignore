@@ -4,3 +4,5 @@ models.zip
 models
 .idea
 src/wandb/
+*.log
+*.log

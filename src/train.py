@@ -27,11 +27,10 @@ def set_seed(seed):
     torch.manual_seed(seed)  # 设置 PyTorch 的 CPU 随机种子
     torch.cuda.manual_seed(seed)  # 设置 PyTorch 的 GPU 随机种子
     torch.cuda.manual_seed_all(seed)  # 如果使用多个 GPU，也需要设置
-    # torch.backends.cudnn.deterministic = True  # 确保 GPU 运行的确定性
-    # torch.backends.cudnn.benchmark = False  # 为了完全保证可重复性，需要关闭优化
+
 
 # 设置随机种子
-set_seed(42)
+set_seed(42) # 开局可以固定seeds
 
 def train_step(model, xs, ys, optimizer, loss_func): # 单个批次（batch）的前向传播、损失计算、反向传播和优化器更新
     optimizer.zero_grad()
@@ -50,7 +49,7 @@ def sample_seeds(total_seeds, count):
 
 
 def train(model, args):
-    global data_sampler1, data_sampler2
+    global task_sampler1, task_sampler2
     optimizer = torch.optim.Adam(model.parameters(), lr=args.training.learning_rate,weight_decay=args.training.weight_decay)  # add weight decay
     curriculum = Curriculum(args.training.curriculum)
 
@@ -70,10 +69,6 @@ def train(model, args):
     # 每个step采样一个bs进行训练
     data_sampler = get_data_sampler(args.training.data # gaussion or uniform
                                     , n_dims=n_dims)
-    if args.training.If_two_distribution:
-        data_sampler1 = get_data_sampler("gaussian" , n_dims=n_dims)
-        data_sampler2 = get_data_sampler("uniform" , n_dims=n_dims)
-
     task_sampler = get_task_sampler(
         args.training.task,
         n_dims,
@@ -82,6 +77,25 @@ def train(model, args):
         num_tasks=args.training.num_tasks,
         **args.training.task_kwargs,
     )
+    # todo 应该改的是两类不同的task w
+    if args.training.If_two_distribution:
+        task_sampler1 = get_task_sampler(
+        args.training.task,
+        n_dims,
+        bsize,
+        w_type = args.training.w_distribution1,# 添加w_sample 参数
+        num_tasks=args.training.num_tasks,
+        **args.training.task_kwargs,
+        )
+        task_sampler2 = get_task_sampler(
+        args.training.task,
+        n_dims,
+        bsize,
+        w_type = args.training.w_distribution2,# 添加w_sampler 参数
+        num_tasks=args.training.num_tasks,
+        **args.training.task_kwargs,
+        )
+
     pbar = tqdm(range(starting_step, args.training.train_steps))
     train_steps = args.training.train_steps
     total_steps = train_steps - starting_step
@@ -95,12 +109,12 @@ def train(model, args):
         # todo If_2distribution
         if args.training.If_two_distribution:
             if args.training.If_RandomShuffle_2distribution:
-                data_sampler = rand_select_sampler(data_sampler1,data_sampler2) # todo 随机选？
-            else: # half gaussian , half uniform
+                task_sampler = rand_select_sampler(task_sampler1,task_sampler2) # random select
+            else: # first half gaussian , half uniform
                 if i < split_point:
-                    data_sampler = data_sampler1
+                    task_sampler = task_sampler1
                 else:
-                    data_sampler = data_sampler2
+                    task_sampler = task_sampler2
 
         # 支持稀疏任务
         if "sparse" in args.training.task:
@@ -111,9 +125,10 @@ def train(model, args):
             data_sampler_args["seeds"] = seeds
             task_sampler_args["seeds"] = [s + 1 for s in seeds]
 
+        # set_seed(42) # todo 不能直接固定seed 不然data全一样了
 
         xs = data_sampler.sample_xs( # 采样xs
-            curriculum.n_points, # 看一下
+            curriculum.n_points,
             bsize,
             curriculum.n_dims_truncated, # 维度
             **data_sampler_args,
@@ -200,7 +215,7 @@ def main(args):
 
 if __name__ == "__main__":
     parser = QuinineArgumentParser(schema=schema) #
-    args = parser.parse_quinfig() # comment's config
+    args = parser.parse_quinfig() # config
     assert args.model.family in ["gpt2", "lstm","gptJ"] #
     print(f"Running with: {args}")
 

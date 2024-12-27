@@ -34,7 +34,7 @@ def get_model_from_run(run_path, step=-1, only_conf=False):
     print("run_path:", run_path)
 
     with open(config_path) as fp:  # we don't Quinfig it to avoid inherits
-        conf = Munch.fromDict(yaml.safe_load(fp))
+        conf = Munch.fromDict(yaml.safe_load(fp)) # todo 从yaml中读取conf
     if only_conf:
         return None, conf
 
@@ -216,6 +216,7 @@ generating_func = globals()[f"gen_{prompting_strategy}"]
 使用 aggregate_metrics 统计和保存结果。
 '''
 def eval_model( #
+    # 参数匹配 kwargs key, 从 kwargs 中解析得到参数
     model,
     task_name,
     data_name,
@@ -224,6 +225,8 @@ def eval_model( #
     prompting_strategy,
     num_eval_examples=1280,
     batch_size=64,
+    If_shift_w_distribution=False, # 默认false ， yaml传入true 启用
+    eval_w_type="add",
     data_sampler_kwargs={},
     task_sampler_kwargs={},
 ):
@@ -241,10 +244,15 @@ def eval_model( #
 
     data_sampler = get_data_sampler(data_name, n_dims, **data_sampler_kwargs)
 
-    # todo   (w1+w2)x
-    task_sampler = get_task_sampler(
-        task_name, n_dims, batch_size, **task_sampler_kwargs
-    )
+    # todo   (w1+w2)x  if
+    if If_shift_w_distribution:
+        task_sampler = get_task_sampler(
+            task_name, n_dims, batch_size,w_type=eval_w_type, **task_sampler_kwargs
+        )
+    else:
+        task_sampler = get_task_sampler(
+            task_name, n_dims, batch_size, **task_sampler_kwargs
+        )
 
     all_metrics = []
 
@@ -268,7 +276,7 @@ def eval_model( #
 用途：
 批量管理评估任务，便于扩展和多策略比较。
 '''
-
+# todo 根据配置（conf） 读取参数
 def build_evals(conf):# 学习 domain shift
     n_dims = conf.model.n_dims
     n_points = conf.training.curriculum.points.end
@@ -276,6 +284,8 @@ def build_evals(conf):# 学习 domain shift
 
     task_name = conf.training.task
     data_name = conf.training.data
+    If_shift_w_distribution = conf.training.If_shift_w_distribution
+    eval_w_type = conf.eval.eval_w_type
     # 创建评估任务的基础配置，所有任务共享这些参数。
     # 如果具体任务有附加需求，可以在后续阶段覆盖这些参数。
     base_kwargs = {
@@ -284,9 +294,11 @@ def build_evals(conf):# 学习 domain shift
         "n_points": n_points,
         "batch_size": batch_size,
         "data_name": data_name,
-        "prompting_strategy": "standard", #
+        "prompting_strategy": "standard",
+        # todo eval from shifted distribution
+        "If_shift_w_distribution":If_shift_w_distribution,
+        "eval_w_type": eval_w_type,
     }
-
     evaluation_kwargs = {}
     # 默认的标准评估任务，其prompting_strategy为"standard"
     evaluation_kwargs["standard"] = {"prompting_strategy": "standard"} #
@@ -346,8 +358,30 @@ def build_evals(conf):# 学习 domain shift
         evaluation_kwargs[name].update(kwargs)
 
     return evaluation_kwargs
-
-
+"""
+return evaluation_kwargs like:
+{
+    "standard": {
+        "task_name": "relu_2nn_regression",
+        "n_dims": 20,
+        "n_points": 40,
+        "batch_size": 64,
+        "data_name": "gaussian",
+        "prompting_strategy": "standard",
+        "eval_w_type": "weight_shift"
+    },
+    "linear_regression": {
+        "task_name": "linear_regression",
+        "n_dims": 20,
+        "n_points": 40,
+        "batch_size": 64,
+        "data_name": "gaussian",
+        "prompting_strategy": "standard",
+        "eval_w_type": "weight_shift"
+    }
+}
+...
+"""
 def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False):
     try:
         with open(save_path) as fp:
@@ -385,7 +419,7 @@ def get_run_metrics(
         all_models = [model]
         if not skip_baselines: #
             all_models += models.get_relevant_baselines(conf.training.task)
-    evaluation_kwargs = build_evals(conf)
+    evaluation_kwargs = build_evals(conf) # 根据conf解析的每个task的参数
     # write result into metrics.json
     if not cache:
         save_path = None

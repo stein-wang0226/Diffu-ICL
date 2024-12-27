@@ -85,35 +85,42 @@ class LinearRegression(Task):
             if self.w_type == "gaussian":
                 self.w_b = torch.randn(self.b_size, self.n_dims, 1)
             elif self.w_type == "uniform":
-                self.w_b = torch.rand(self.b_size, self.n_dims, 1) * 2 - 1
+                self.w_b = torch.tensor(np.random.uniform(-2, 2, size=(self.b_size, self.n_dims, 1)), dtype=torch.float32)
+            elif self.w_type == "add":
+                self.w_b = torch.randn(self.b_size, self.n_dims, 1) + torch.tensor(np.random.uniform(-2, 2, size=(self.b_size, self.n_dims, 1)), dtype=torch.float32)
             else:
-                raise ValueError("Invalid w_type. Must be 'gaussion' or 'uniform'.")
+                raise ValueError("Invalid w_type. Must be 'gaussian' or 'uniform'.")
 
-        elif seeds is not None:
+        elif seeds is not None: # 利用生成的seeds
             self.w_b = torch.zeros(self.b_size, self.n_dims, 1)
             generator = torch.Generator()
             assert len(seeds) == self.b_size
             for i, seed in enumerate(seeds):
                 generator.manual_seed(seed)
+                np.random.seed(seed)
                 if self.w_type == "gaussian":
                     self.w_b[i] = torch.randn(self.n_dims, 1, generator=generator)
                 elif self.w_type == "uniform":
                     # mu sigma  np.normal  numpy.random.uniform
-                    self.w_b[i] = torch.rand(self.n_dims, 1, generator=generator) * 2 - 1
-                    np.random.uniform()
+                    self.w_b[i] = torch.tensor( np.random.uniform(-2, 2, size=(n_dims, 1)), dtype=torch.float32 )
                 # todo 添加 w1+w2
-
+                elif self.w_type == "add":
+                    self.w_b = torch.randn(self.b_size, self.n_dims, 1) + torch.tensor(
+                        np.random.uniform(-2, 2, size=(self.b_size, self.n_dims, 1)), dtype=torch.float32
+                    )
                 else:
-                    raise ValueError("Invalid w_type. Must be 'gaussian' or 'uniform'.")
+                    raise ValueError("Invalid w_type. Must be 'gaussian' or 'uniform' or 'add'.")
         else:
             assert "w" in pool_dict
             indices = torch.randperm(len(pool_dict["w"]))[:batch_size]
             self.w_b = pool_dict["w"][indices]
     def evaluate(self, xs_b):
-        w_b = self.w_b.to(xs_b.device)
+        # w_b = self.w_b.to(xs_b.device)
+        # ys_b = self.scale * (xs_b @ w_b)[:, :, 0]
+        w_b = self.w_b.to(xs_b.device).float() # 统一为float32
+        xs_b = xs_b.float()
         ys_b = self.scale * (xs_b @ w_b)[:, :, 0]
         return ys_b
-
     @staticmethod
     def generate_pool_dict(n_dims, num_tasks,w_type, **kwargs):
         if w_type == "gaussian":

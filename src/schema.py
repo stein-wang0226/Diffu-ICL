@@ -60,8 +60,13 @@ training_schema = {
     "curriculum": stdict(curriculum_schema),
     "If_two_distribution": merge(tboolean, nullable, default(False)), # data 一半来自于distribution1 ， 一半 2
     "If_RandomShuffle_2distribution": merge(tboolean, nullable, default(False)),# 两类distribution 的batch打乱
+    "w_distribution1": merge(tstring, allowed(["gaussian","uniform"]),default("gaussian")),
+    "w_distribution2": merge(tstring, allowed(["gaussian", "uniform"]), default("uniform")),
 }
-
+eval_schema = {
+    "If_shift_w_distribution": merge(tboolean, nullable, default(False)),
+    "eval_w_type": merge(tstring, allowed(["add"]), default("add")),  # w1+w2
+}
 wandb_schema = {
     "project": merge(tstring, default("in-context-training")),
     "entity": merge(tstring, default("in-context")),
@@ -74,6 +79,7 @@ schema = {
     "out_dir": merge(tstring, required),
     "model": stdict(model_schema),
     "training": stdict(training_schema),
+    "eval": stdict(eval_schema),
     "wandb": stdict(wandb_schema),
     "test_run": merge(tboolean, default(False)), #
 }
