@@ -1,7 +1,7 @@
 import math
 
 import torch
-
+import numpy as np
 # 常用的评估函数
 def squared_error(ys_pred, ys):
     return (ys - ys_pred).square()
@@ -98,8 +98,11 @@ class LinearRegression(Task):
                 if self.w_type == "gaussian":
                     self.w_b[i] = torch.randn(self.n_dims, 1, generator=generator)
                 elif self.w_type == "uniform":
+                    # mu sigma  np.normal  numpy.random.uniform
                     self.w_b[i] = torch.rand(self.n_dims, 1, generator=generator) * 2 - 1
+                    np.random.uniform()
                 # todo 添加 w1+w2
+
                 else:
                     raise ValueError("Invalid w_type. Must be 'gaussian' or 'uniform'.")
         else:
