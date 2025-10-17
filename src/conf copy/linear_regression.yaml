@@ -3,6 +3,7 @@ inherit:
 
 training:
     task: linear_regression
+    # num_training_examples: 5000
     curriculum:
         points:
             start: 11
@@ -10,7 +11,11 @@ training:
             inc: 2
             interval: 2000
 
-out_dir: ../models12/linear_regression  #
+out_dir: ../models2/linear_regression  #
 
 wandb:
-    name: "linear_regression_standard"
+  project: test
+  entity: baojian-fudan-university
+  log_every_steps: 100
+  name: "linear_regression"
+

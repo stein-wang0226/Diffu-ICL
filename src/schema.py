@@ -14,9 +14,9 @@ from funcy import merge
 # 配置管理和参数校验 json
 
 model_schema = {
-    "family": merge(tstring, allowed(["gpt2", "lstm","gptJ"])),
-    "n_positions": merge(tinteger, required),  # maximum context length
-    "n_dims": merge(tinteger, required),  # latent dimension
+    "family": merge(tstring, allowed(["gpt2", "lstm", "gptJ", "llada","dream"])),  # 增加llada选项
+    "n_positions": merge(tinteger, required),
+    "n_dims": merge(tinteger, required),
     "n_embd": merge(tinteger, required),
     "n_layer": merge(tinteger, required),
     "n_head": merge(tinteger, required),

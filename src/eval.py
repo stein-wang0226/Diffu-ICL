@@ -17,7 +17,6 @@ import yaml
 import models
 from samplers import get_data_sampler, sample_transformation,rand_select_sampler
 
-
 from tasks import get_task_sampler
 """
 测试数据中xs_p 策略
@@ -29,15 +28,23 @@ from tasks import get_task_sampler
 关键逻辑：
 使用 torch.load 加载模型的状态字典，并通过 model.load_state_dict 恢复模型。
 '''
-def get_model_from_run(run_path, step=-1, only_conf=False):
-    config_path = os.path.join(run_path, "config.yaml")
+def get_model_from_run(run_path,w_type='add',step=-1, only_conf=False):
+    # todo 改的是models12中的config.yaml
+    if w_type=="add":
+        config_path = os.path.join(run_path, "config.yaml")
+    elif w_type=="gaussian":
+        config_path = os.path.join(run_path, "config_w_g.yaml")
+    elif w_type=="uniform":
+        config_path = os.path.join(run_path, "config_w_u.yaml")
+    else:
+        raise ValueError("w_type must be 'add' or 'gaussian' or 'uniform'.")
+
     print("run_path:", run_path)
 
     with open(config_path) as fp:  # we don't Quinfig it to avoid inherits
         conf = Munch.fromDict(yaml.safe_load(fp)) # todo 从yaml中读取conf
     if only_conf:
         return None, conf
-
     model = models.build_model(conf.model)
 
     if step == -1:
@@ -66,9 +73,10 @@ def get_model_from_run(run_path, step=-1, only_conf=False):
 如果没有 xs_p，直接评估并计算损失。
 如果提供了 xs_p，对测试样本逐点评估，并计算逐点评估指标。
 '''
+
 def eval_batch(model, task_sampler, xs, xs_p=None):
     task = task_sampler()
-    if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm"]:
+    if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm","gptJ","llada","dream"]:
         device = "cuda"
     else:
         device = "cpu"
@@ -77,6 +85,7 @@ def eval_batch(model, task_sampler, xs, xs_p=None):
         ys = task.evaluate(xs)
         pred = model(xs.to(device), ys.to(device)).detach()
         metrics = task.get_metric()(pred.cpu(), ys)
+        
     else: # 逐点评估，测试数据的每个数据点逐一生成评估样本
         b_size, n_points, _ = xs.shape
         metrics = torch.zeros(b_size, n_points)
@@ -225,7 +234,7 @@ def eval_model( #
     prompting_strategy,
     num_eval_examples=1280,
     batch_size=64,
-    If_shift_w_distribution=False, # 默认false ， yaml传入true 启用
+    If_shift_w_distribution=False, # 默认false ， yaml传入true 启用 w1 + w2
     eval_w_type="add",
     data_sampler_kwargs={},
     task_sampler_kwargs={},
@@ -284,7 +293,8 @@ def build_evals(conf):# 学习 domain shift
 
     task_name = conf.training.task
     data_name = conf.training.data
-    If_shift_w_distribution = conf.training.If_shift_w_distribution
+
+    If_shift_w_distribution = conf.eval.If_shift_w_distribution
     eval_w_type = conf.eval.eval_w_type
     # 创建评估任务的基础配置，所有任务共享这些参数。
     # 如果具体任务有附加需求，可以在后续阶段覆盖这些参数。
@@ -389,7 +399,7 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
     except Exception:
         all_metrics = {}
 
-    for eval_name, kwargs in tqdm(evaluation_kwargs.items()):
+    for eval_name, kwargs in tqdm(evaluation_kwargs.items()): # 最后一个 error
         metrics = {}
         if eval_name in all_metrics and not recompute:
             metrics = all_metrics[eval_name]
@@ -399,6 +409,9 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
 
             metrics[model.name] = eval_model(model, **kwargs)
         all_metrics[eval_name] = metrics
+        if save_path is not None:
+            with open(save_path, "w") as fp:
+                json.dump(all_metrics, fp, indent=2)
     # 保存评估指标
     if save_path is not None:
         with open(save_path, "w") as fp:
@@ -408,13 +421,14 @@ def compute_evals(all_models, evaluation_kwargs, save_path=None, recompute=False
 
 
 def get_run_metrics(
-    run_path, step=-1, cache=True, skip_model_load=False, skip_baselines=False
+    run_path, step=-1, cache=True, skip_model_load=False, skip_baselines=False,w_type="add",
 ):
     if skip_model_load:
-        _, conf = get_model_from_run(run_path, only_conf=True)
+        # todo 不同conf
+        _, conf = get_model_from_run(run_path,w_type=w_type, only_conf=True)
         all_models = []
     else:
-        model, conf = get_model_from_run(run_path, step)
+        model, conf = get_model_from_run(run_path,w_type=w_type, step=step)
         model = model.cuda().eval()
         all_models = [model]
         if not skip_baselines: #
@@ -424,9 +438,9 @@ def get_run_metrics(
     if not cache:
         save_path = None
     elif step == -1:
-        save_path = os.path.join(run_path, "metrics.json") # 结果保存路径
+        save_path = os.path.join(run_path, f"metrics_{w_type}.json") # 结果保存路径
     else:
-        save_path = os.path.join(run_path, f"metrics_{step}.json")
+        save_path = os.path.join(run_path, f"metrics_{w_type}_{step}.json")
 
     recompute = False
     if save_path is not None and os.path.exists(save_path):
@@ -441,7 +455,7 @@ def get_run_metrics(
 
 
 def conf_to_model_name(conf):
-    if conf.model.family == "gpt2":
+    if conf.model.family == "gpt2" or conf.model.family == "llada" or conf.model.family == "gptJ":
         return {
             (3, 2): "Transformer-xs",
             (6, 4): "Transformer-small",

@@ -62,6 +62,8 @@ def get_task_sampler(
         "quadratic_regression": QuadraticRegression,
         "relu_2nn_regression": Relu2nnRegression,
         "decision_tree": DecisionTree,
+
+        
     }
     if task_name in task_names_to_classes:
         task_cls = task_names_to_classes[task_name]
@@ -69,7 +71,7 @@ def get_task_sampler(
             if pool_dict is not None:
                 raise ValueError("Either pool_dict or num_tasks should be None.")
             pool_dict = task_cls.generate_pool_dict(n_dims, num_tasks, w_type,**kwargs)
-        return lambda **args: task_cls(n_dims, batch_size,w_type, pool_dict, **args, **kwargs)
+        return lambda **args: task_cls(n_dims, batch_size,w_type, pool_dict, **args, **kwargs) # todo
     else:
         print("Unknown task")
         raise NotImplementedError
@@ -94,6 +96,8 @@ class LinearRegression(Task):
         elif seeds is not None: # 利用生成的seeds
             self.w_b = torch.zeros(self.b_size, self.n_dims, 1)
             generator = torch.Generator()
+            if isinstance(seeds, int):  # 如果 seeds 是单个整数，则扩展为种子列表
+                seeds = [seeds + i for i in range(self.b_size)]
             assert len(seeds) == self.b_size
             for i, seed in enumerate(seeds):
                 generator.manual_seed(seed)

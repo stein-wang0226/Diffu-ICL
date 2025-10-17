@@ -1,46 +1,228 @@
 import torch
-import torch.nn as nn
-from transformers import GPT2Model, GPT2Config, GPTJConfig,GPTJModel
+from torch import nn
+# Dream 如果暂时不使用，可以先注释掉
+# from dllm.pipelines.dream.models.configuration_dream import DreamConfig
+# from dllm.pipelines.dream.models.modeling_dream import DreamModel
 from tqdm import tqdm
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import LogisticRegression, Lasso
 import warnings
 from sklearn import tree
 import xgboost as xgb
-
+from transformers import GPT2Model, GPT2Config, GPTJModel, GPTJConfig
 from base_models import NeuralNetwork, ParallelNetworks
+# >>> 关键：导入 LLaDA 基础模型与配置（不是 LM 包装）
+from dllm.pipelines.llada.models.configuration_llada import LLaDAConfig
+from dllm.pipelines.llada.models.modeling_llada import LLaDAModel as _LLaDABase
 
 
-def build_model(conf):
+# ========== 工具函数：统一 x,y 拼接 ========== #
+def _combine_xs_ys(xs_b, ys_b):
     """
-    此函数根据配置文件构建模型，目前支持 Transformer 模型（GPT2）。
-    可以进一步扩展以支持其他模型类型。
-    参数:
-        conf: 包含模型配置信息的对象。
-    返回:
-        model: 构建好的模型实例。
+    Interleave (x_i, y_i) -> zs, 并把 y 扩成最后一维第一个槽位。
+    xs_b: [B, T, D]
+    ys_b: [B, T]
+    return: zs [B, 2T, D]
     """
-    if conf.family == "gpt2":
-        model = TransformerModel(
-            n_dims=conf.n_dims,
-            n_positions=conf.n_positions, # prompt xs length
-            n_embd=conf.n_embd,
-            n_layer=conf.n_layer,
-            n_head=conf.n_head,
+    bsize, points, dim = xs_b.shape
+    ys_b_wide = torch.cat(
+        (ys_b.view(bsize, points, 1),
+         torch.zeros(bsize, points, dim - 1, device=ys_b.device)),
+        dim=2,
+    )
+    zs = torch.stack((xs_b, ys_b_wide), dim=2).view(bsize, 2 * points, dim)
+    return zs
+import torch
+import torch.nn as nn
+from dllm.pipelines.llada.models.configuration_llada import LLaDAConfig
+from dllm.pipelines.llada.models.modeling_llada import LLaDAModel as _LLaDABase
+
+
+import logging
+# 配置日志
+log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
+
+# ========== GPT 模型 ========== #
+class TransformerModel(nn.Module):
+    def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4, type="gpt2", mlp_ratio=4.0):
+        super().__init__()
+        self.mlp_ratio = mlp_ratio  # 添加 mlp_ratio 参数
+
+        if type == "gpt2":
+            configuration = GPT2Config(
+                n_positions=2 * n_positions,
+                n_embd=n_embd,
+                n_layer=n_layer,
+                n_head=n_head,
+                resid_pdrop=0.0,
+                embd_pdrop=0.0,
+                attn_pdrop=0.0,
+                use_cache=False,
+            )
+            self._backbone = GPT2Model(configuration)
+        elif type == "gptJ":
+            configuration = GPTJConfig(
+                n_positions=2 * n_positions,
+                n_embd=n_embd,
+                n_layer=n_layer,
+                n_head=n_head,
+                resid_pdrop=0.0,
+                embd_pdrop=0.0,
+                attn_pdrop=0.0,
+                use_cache=False,
+            )
+            self._backbone = GPTJModel(configuration)
+        else:
+            raise ValueError(f"Unsupported GPT type: {type}")
+
+        self.name = f"{type}_embd={n_embd}_layer={n_layer}_head={n_head}"
+        
+        self.n_positions = n_positions
+        self.n_dims = n_dims
+
+        self._read_in = nn.Linear(n_dims, n_embd)
+        self._read_out = nn.Linear(n_embd, 1)
+        # self._read_out = nn.Linear(int(n_embd * mlp_ratio), 1)  # 使用 mlp_ratio 进行调整
+
+    def forward(self, xs, ys, inds=None):
+        if inds is None:
+            inds = torch.arange(ys.shape[1], device=ys.device)
+        else:
+            inds = torch.as_tensor(inds, device=ys.device)
+
+        zs = _combine_xs_ys(xs, ys)
+        embeds = self._read_in(zs)
+        output = self._backbone(inputs_embeds=embeds).last_hidden_state
+        prediction = self._read_out(output)
+        return prediction[:, ::2, 0][:, inds]
+
+
+class LLaDAICLWrapper(nn.Module):
+    def __init__(self, n_dims, n_positions, n_embd=256, n_layer=12, n_head=8, **extra):
+        super().__init__()
+        self.name = "llada"  # 添加 name 属性
+        # 配置 LLaDA 模型参数
+        cfg = LLaDAConfig(
+            n_heads=int(n_head),
+            n_layers=int(n_layer),
+            max_sequence_length=int(2 * n_positions),
+            rope=True,
+            alibi=False,
+            use_cache=False,
+            weight_tying=False,
+            block_group_size=int(extra.get("block_group_size", 1)),
         )
-        # add
-    elif conf.family == "gptJ":
-        model = TransformerModel(
-            n_dims=conf.n_dims,
-            n_positions=conf.n_positions, # prompt xs length
-            n_embd=conf.n_embd,
-            n_layer=conf.n_layer,
-            n_head=conf.n_head,
+
+        # --- 关键字段统一转成干净的标量 int/float ---
+        cfg.d_model = int(n_embd)
+
+        # 获取 mlp_ratio（来自 YAML 或 extra 配置）
+        mlp_ratio = extra.get("mlp_ratio", getattr(cfg, "mlp_ratio", 4.0))
+        if isinstance(mlp_ratio, (list, tuple)):
+            mlp_ratio = mlp_ratio[0]
+        cfg.mlp_ratio = float(mlp_ratio)
+
+        # 强制设置 mlp_hidden_size 为整数
+        cfg.mlp_hidden_size = int(cfg.d_model * cfg.mlp_ratio)
+
+        # 设置 KV 头数（如果没有则默认使用 n_heads）
+        if not hasattr(cfg, "effective_n_kv_heads") or cfg.effective_n_kv_heads is None:
+            cfg.effective_n_kv_heads = int(n_head)
+
+        # 打印模型配置（用于调试）
+        print(f"[LLaDA Wrapper] d_model={cfg.d_model}, mlp_ratio={cfg.mlp_ratio}, "
+              f"mlp_hidden_size={cfg.mlp_hidden_size}, n_heads={cfg.n_heads}, "
+              f"n_layers={cfg.n_layers}, kv_heads={cfg.effective_n_kv_heads}, "
+              f"block_group_size={cfg.block_group_size}")
+
+        # LLaDA 模型 backbone
+        self._backbone = _LLaDABase(cfg, init_params=True)
+
+        # 与 GPT 对齐的输入/输出层
+        self.n_positions = n_positions
+        self.n_dims = n_dims
+        self.d_model = cfg.d_model
+        self._read_in = nn.Linear(n_dims, cfg.d_model)
+        self._read_out = nn.Linear(cfg.d_model, 1)
+
+    def forward(self, xs, ys, inds=None):
+        # 获取 batch_size 和 seq_len
+        b, t, d = xs.shape
+
+        # 默认设置 inds
+        if inds is None:
+            inds = torch.arange(ys.shape[1], device=ys.device)
+        else:
+            inds = torch.as_tensor(inds, device=ys.device)
+
+        # 将 xs 和 ys 交错并合并
+        ys_wide = torch.cat([ys.view(b, t, 1), torch.zeros(b, t, d - 1, device=ys.device)], dim=2)
+        zs = torch.stack([xs, ys_wide], dim=2).view(b, 2 * t, d)
+
+        # 输入 LLaDA 模型
+        input_ids = zs  # 使用 zs 作为 input_ids 传递给模型
+        embeds = self._read_in(input_ids)  # 嵌入映射到模型的维度
+
+        # 确保 embeds 维度正确 (b, seq_len, d_model)
+        embeds = embeds.view(b, 2 * t, self.d_model)
+
+        # 调用 _backbone 进行前向传播
+        out = self._backbone(input_ids=input_ids, input_embeddings=embeds, output_hidden_states=True)  # 确保传递 input_ids
+        last_h = out.hidden_states[-1]
+
+        # 通过输出层获取预测
+        pred = self._read_out(last_h)[:, ::2, 0][:, inds]
+
+        return pred
+
+# ========== 构建函数 ========== #
+def build_model(conf):
+    family = conf["family"]
+
+    # 🧭 兼容不同命名 （s）
+    n_layer = conf.get("n_layer", conf.get("n_layers", 6))
+    n_head = conf.get("n_head", conf.get("n_heads", 8))
+    n_embd = conf.get("n_embd", conf.get("d_model", 256))
+
+    if family == "gpt2":
+        return TransformerModel(
+            n_dims=conf["n_dims"],
+            n_positions=conf["n_positions"],
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_head,
+            type="gpt2",
+        # mlp_ratio=conf.get("mlp_ratio", 4.0), # 这个参数是否要统一
+
+        )
+    elif family == "gptJ":
+        return TransformerModel(
+            n_dims=conf["n_dims"],
+            n_positions=conf["n_positions"],
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_head,
+            type="gptJ",
+            # mlp_ratio=conf.get("mlp_ratio", 4.0), # 这个参数是否要统一
+
+        )
+    elif family == "llada":
+        return LLaDAICLWrapper(
+            n_dims=conf["n_dims"],
+            n_positions=conf["n_positions"],
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_head,
+            mlp_ratio=conf.get("mlp_ratio", 4.0), # 这个参数是否要统一
         )
     else:
-        raise NotImplementedError
+        raise NotImplementedError(f"Unsupported model family: {family}")
 
-    return model
+
+
+
 
 
 def get_relevant_baselines(task_name):
@@ -93,76 +275,6 @@ def get_relevant_baselines(task_name):
 
     models = [model_cls(**kwargs) for model_cls, kwargs in task_to_baselines[task_name]]
     return models
-
-
-class TransformerModel(nn.Module): #
-    def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4, type = "gpt2"):
-        # - **`n_dims`**：输入数据的特征维度。
-        # - **`n_positions`** ：上下文中点的最大数量。
-        # - **`n_embd`**：嵌入维度
-        # - **`n_layer`**：Transformer层的数量。
-        # - **`n_head`**：多头注意力机制的头数。
-        super(TransformerModel, self).__init__()
-        if type =="gpt2":
-            configuration = GPT2Config( #  if GPT- J ？
-                n_positions=2 * n_positions,
-                n_embd=n_embd,
-                n_layer=n_layer,
-                n_head=n_head,
-                resid_pdrop=0.0,
-                embd_pdrop=0.0,
-                attn_pdrop=0.0,
-                use_cache=False,
-            )
-            self._backbone = GPT2Model(configuration)
-
-        elif type =="gptJ":
-            configuration = GPTJConfig(
-                n_positions=2 * n_positions,n_embd=n_embd,
-                n_layer=n_layer,
-                n_head=n_head,
-                resid_pdrop=0.0,
-                embd_pdrop=0.0,
-                attn_pdrop=0.0,
-                use_cache=False,)
-            self._backbone = GPTJModel(configuration)
-
-        self.name = f"gpt2_embd={n_embd}_layer={n_layer}_head={n_head}"
-
-        self.n_positions = n_positions
-        self.n_dims = n_dims
-        self._read_in = nn.Linear(n_dims, n_embd) # 输入映射层
-        self._read_out = nn.Linear(n_embd, 1) #输出映射层 --> 标量
-
-    @staticmethod
-    def _combine(xs_b, ys_b):
-        """Interleaves the x's and the y's into a single sequence."""
-        bsize, points, dim = xs_b.shape
-        ys_b_wide = torch.cat( # 扩展为与xs 相同维度
-            (
-                ys_b.view(bsize, points, 1),
-                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
-            ),
-            axis=2,
-        )
-        zs = torch.stack((xs_b, ys_b_wide), dim=2)
-        zs = zs.view(bsize, 2 * points, dim)
-        return zs
-
-    def forward(self, xs, ys, inds=None):
-        # inds 要预测的点的索引列表。如果为 None，则预测所有点
-        if inds is None:
-            inds = torch.arange(ys.shape[1])
-        else:
-            inds = torch.tensor(inds)
-            if max(inds) >= ys.shape[1] or min(inds) < 0:
-                raise ValueError("inds contain indices where xs and ys are not defined")
-        zs = self._combine(xs, ys)
-        embeds = self._read_in(zs)  # 用线形层讲输入输出维度转化
-        output = self._backbone(inputs_embeds=embeds).last_hidden_state
-        prediction = self._read_out(output)
-        return prediction[:, ::2, 0][:, inds]  # predict only on xs , ::2 in order to skip ys
-        # 从 [batch_size, 2 * n_points, n_embd] 变为 [batch_size, n_points]，即只保留输入特征的预测结果。
 
 
 class NNModel:
@@ -326,6 +438,8 @@ class LassoModel:
             preds.append(pred)
 
         return torch.stack(preds, dim=1)
+
+
 
 
 # Gradient Descent and variants.

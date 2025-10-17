@@ -1,0 +1,47 @@
+model:
+  n_dims: 20
+  n_positions: 101
+  family: gpt2            # 也可以写 gpt2
+  n_embd: 256
+  mlp_ratio: 4.0
+  d_model: 256
+  n_layers: 6
+  n_heads: 8
+  max_sequence_length: 128
+  vocab_size: 512
+  rope: true
+  block_group_size: 1
+
+training:
+  task: linear_regression
+  task_kwargs: {}
+  num_tasks: 1
+  data: gaussian
+  w_type: gaussian
+  batch_size: 32
+  learning_rate: 0.0001
+  weight_decay: 0.0
+  save_every_steps: 1000
+  keep_every_steps: 10000
+  train_steps: 50001
+  curriculum:
+    dims:
+      start: 5
+      end: 20
+      inc: 1
+      interval: 1000
+    points:
+      start: 11
+      end: 41
+      inc: 2
+      interval: 1000
+
+
+wandb:
+  project: ICL-dllm
+  entity: baojian-fudan-university
+  notes: "unified llada training"
+  log_every_steps: 50
+  name: "test-gpt2-train"
+
+out_dir: ./checkpoints/unified_llada

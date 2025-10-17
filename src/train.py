@@ -28,10 +28,6 @@ def set_seed(seed):
     torch.cuda.manual_seed(seed)  # 设置 PyTorch 的 GPU 随机种子
     torch.cuda.manual_seed_all(seed)  # 如果使用多个 GPU，也需要设置
 
-
-# 设置随机种子
-set_seed(42) # 开局可以固定seeds
-
 def train_step(model, xs, ys, optimizer, loss_func): # 单个批次（batch）的前向传播、损失计算、反向传播和优化器更新
     optimizer.zero_grad()
     output = model(xs, ys)
@@ -49,7 +45,6 @@ def sample_seeds(total_seeds, count):
 
 
 def train(model, args):
-    global task_sampler1, task_sampler2
     optimizer = torch.optim.Adam(model.parameters(), lr=args.training.learning_rate,weight_decay=args.training.weight_decay)  # add weight decay
     curriculum = Curriculum(args.training.curriculum)
 
@@ -77,24 +72,7 @@ def train(model, args):
         num_tasks=args.training.num_tasks,
         **args.training.task_kwargs,
     )
-    # todo 应该改的是两类不同的task w
-    if args.training.If_two_distribution:
-        task_sampler1 = get_task_sampler(
-        args.training.task,
-        n_dims,
-        bsize,
-        w_type = args.training.w_distribution1,# 添加w_sample 参数
-        num_tasks=args.training.num_tasks,
-        **args.training.task_kwargs,
-        )
-        task_sampler2 = get_task_sampler(
-        args.training.task,
-        n_dims,
-        bsize,
-        w_type = args.training.w_distribution2,# 添加w_sampler 参数
-        num_tasks=args.training.num_tasks,
-        **args.training.task_kwargs,
-        )
+
 
     pbar = tqdm(range(starting_step, args.training.train_steps))
     train_steps = args.training.train_steps
@@ -105,27 +83,16 @@ def train(model, args):
     for i in pbar:
         data_sampler_args = {}
         task_sampler_args = {}
-
-        # todo If_2distribution
-        if args.training.If_two_distribution:
-            if args.training.If_RandomShuffle_2distribution:
-                task_sampler = rand_select_sampler(task_sampler1,task_sampler2) # random select
-            else: # first half gaussian , half uniform
-                if i < split_point:
-                    task_sampler = task_sampler1
-                else:
-                    task_sampler = task_sampler2
-
         # 支持稀疏任务
         if "sparse" in args.training.task:
             task_sampler_args["valid_coords"] = curriculum.n_dims_truncated
+
+        # num_training_examples = 5000 # test
         if num_training_examples is not None: # 训练集中样本的总数
             assert num_training_examples >= bsize
             seeds = sample_seeds(num_training_examples, bsize)
             data_sampler_args["seeds"] = seeds
             task_sampler_args["seeds"] = [s + 1 for s in seeds]
-
-        # set_seed(42) # todo 不能直接固定seed 不然data全一样了
 
         xs = data_sampler.sample_xs( # 采样xs
             curriculum.n_points,
@@ -200,7 +167,8 @@ def main(args):
             config=args.__dict__, # config=args.__dict__ 用于将 args 对象的所有属性（即命令行参数和配置项）以字典形式传递给 WandB 作为配置
             notes=args.wandb.notes,
             name=args.wandb.name,
-            resume=True,
+            # resume=True,
+            resume="never",   # ✅ 禁止任何resume
         )
 
     model = build_model(args.model)
@@ -218,7 +186,7 @@ if __name__ == "__main__":
     args = parser.parse_quinfig() # config
     assert args.model.family in ["gpt2", "lstm","gptJ"] #
     print(f"Running with: {args}")
-
+    set_seed(42)
     if not args.test_run: # 设置运行id
         run_id = args.training.resume_id
         if run_id is None:

@@ -1,0 +1,45 @@
+model:
+  n_dims: 20
+  n_positions: 101
+  family: gpt2
+  n_embd: 256 # == d_model 含义相同， 不同model定义叫法
+  d_model: 256
+  mlp_ratio: 4.0
+  n_layers: 12
+  n_heads: 8
+
+
+training:
+  task: linear_regression
+  task_kwargs: {}
+  # num_tasks: 1 # 固定w，会迅速收敛，泛化性差
+  data: gaussian
+  w_type: gaussian
+  batch_size: 64
+  learning_rate: 0.0001
+  weight_decay: 0
+  save_every_steps: 1000
+  keep_every_steps: 100000
+  # num_training_examples: 5000
+  eval_every_steps: 500  # 每n步评估一次
+  train_steps: 500001
+  curriculum:
+    dims:
+      start: 5
+      end: 20
+      inc: 1
+      interval: 2000
+    points:
+      start: 11
+      end: 41
+      inc: 2
+      interval: 2000
+
+wandb:
+  project: test
+  entity: baojian-fudan-university
+  notes: none
+  log_every_steps: 100
+  name: "gpt2-standard"
+
+out_dir: ./checkpoints/unified_llada
