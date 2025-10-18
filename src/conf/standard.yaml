@@ -1,14 +1,16 @@
 model:
   n_dims: 20
   n_positions: 101
-  family: gpt2
+  family: llama
   n_embd: 256 # == d_model 含义相同， 不同model定义叫法
   d_model: 256
   mlp_ratio: 4.0
   n_layers: 12
   n_heads: 8
-
-
+  pretrained: false
+  hide_last_target: True
+  predict_last_only: True
+  # model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 training:
   task: linear_regression
   task_kwargs: {}
@@ -40,6 +42,6 @@ wandb:
   entity: baojian-fudan-university
   notes: none
   log_every_steps: 100
-  name: "gpt2-standard"
+  name: "llama-test"
 
 out_dir: ./checkpoints/unified_llada

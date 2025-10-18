@@ -25,6 +25,18 @@ def parse_arguments() -> Dict[str, Any]:
     parser.add_argument("--n_embd", type=int, help="Embedding dimension")
     parser.add_argument("--n_layer", type=int, help="Number of transformer layers")
     parser.add_argument("--n_head", type=int, help="Number of attention heads")
+    # === Model load options ===
+    parser.add_argument(
+        "--pretrained",
+        action="store_true",
+        help="If set, load pretrained weights from HuggingFace (e.g., Qwen2.5, LLaMA3)"
+    )
+    parser.add_argument(
+        "--model-name-or-path",
+        type=str,
+        default=None,
+        help="Optional model name or local path, e.g., 'Qwen/Qwen2.5-7B-Instruct' or './checkpoints/llama3'"
+    )
 
     # Curriculum parameters
     parser.add_argument("--curriculum-dims-start", type=int)
@@ -53,6 +65,7 @@ def parse_arguments() -> Dict[str, Any]:
     parser.add_argument("--save-every-steps", type=int, default=1000)
     parser.add_argument("--keep-every-steps", type=int, default=-1)
     parser.add_argument("--resume-id", type=str, default=None)
+    
 # # 在 parse_arguments() 里其它 parser.add_argument 之后，新增：
 #     parser.add_argument(
 #         "--sampler_mode",
