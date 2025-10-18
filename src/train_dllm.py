@@ -133,6 +133,7 @@ def train(model, config):
             sum(max(cur.n_dims_truncated - i, 0) for i in range(cur.n_points)) / cur.n_points
         )
         excess_loss = loss / baseline_loss if baseline_loss > 0 else loss
+        pointwise_loss_np = pointwise_loss.detach().cpu().flatten().numpy()
 
         # === log === #
         if step % wandb_cfg["log_every_steps"] == 0 :
@@ -140,9 +141,7 @@ def train(model, config):
                 {
                     "overall_loss": loss,
                     "excess_loss": excess_loss,
-                    "pointwise/loss": dict(
-                        zip(pointwise_tags, pointwise_loss.cpu().numpy())
-                    ),
+                    "pointwise/loss": {str(i): float(v) for i, v in zip(pointwise_tags, pointwise_loss_np)},
                     "curriculum/n_points": cur.n_points,
                     "curriculum/n_dims": cur.n_dims_truncated,
                 },
@@ -204,7 +203,7 @@ def train(model, config):
                 # --- 在评估阶段隐藏最后一个 y_k，并只输出最后预测 ---
                 model.hide_last_target = True
                 model.predict_last_only = True
-                print(f"[Eval] {model.name}: hide_last_target=True, predict_last_only=True")
+                # print(f"[Eval] {model.name}: hide_last_target=True, predict_last_only=True") 
 
             else:
                 # 万一是未更新的旧模型（理论上不会出现）

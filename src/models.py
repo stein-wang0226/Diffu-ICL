@@ -474,7 +474,7 @@ class LLaDAICLWrapper(nn.Module):
         # ===== 屏蔽最后一个 y_k 输入 =====
         if self.hide_last_target:
             ys_for_input = ys.clone()
-            ys_for_input[:, -1] = 0.0
+            # ys_for_input[:, -1] = 0.0
         else:
             ys_for_input = ys
 
