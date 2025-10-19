@@ -6,7 +6,8 @@ It supports multiple model families — including **Transformer (GPT-2 / GPT-J)*
 ---
 
 ## 📂 Project Structure
-
+**dllm需要import的主要是/llada/models/modelling_llada 下的模型class,
+training的code 可以参考dllm.core.trainers下的逻辑自己写**
 in-context-learning/
 │
 ├── src/
@@ -20,25 +21,23 @@ in-context-learning/
 │ ├── train.py # Unified training loop
 │ └── inference.py # Inference pipeline
 │
-└── dllm/
-└── dllm/
-├── pipelines/
-│ ├── llada/
-│ │ ├── init.py
-│ │ ├── generate.py # LLaDA generation utilities
-│ │ ├── modeling_llada.py # LLaDA model definition
-│ │ └── trainer.py # LLaDA training logic
-│ └── ... # Additional DLLM models
-├── examples/
-│ └── llada/
-│ ├── pt.py # Pretraining example
-│ └── sft.py # Finetuning example
-├── utils/ # Helper functions for DLLM
-├── data/ # Data processing
-└── ...
+└── dllm/ 
+    └── dllm/
+    ├── pipelines/
+    │ ├── llada/
+    │ │ ├── init.py
+    │ │ ├── generate.py 
+    │ │ └── trainer.py
+    │ └── models/ modelling_llada.py # 需要import LLaDa model 类的定义
+    ├── examples/
+    │ └── llada/
+    │ ├── pt.py # Pretraining example
+    │ └── sft.py # Finetuning example
+    ├── utils/ # Helper functions for DLLM
+    ├── data/ # Data processing
+    └── core/ # 源码
 
-python
-复制代码
+
 
 ✅ **Supported Models**
 - Transformer: GPT-2, GPT-J  
