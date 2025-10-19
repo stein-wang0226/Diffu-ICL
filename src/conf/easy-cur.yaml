@@ -8,8 +8,14 @@ model:
   n_layers: 12
   n_heads: 8
   pretrained: false
+  #### diffusion config
+  mask_mode: fixed   # ✅ 可选值: fixed / scheduler
+  loss_weight_type: ones  # ✅ loss 加权方式，可选: ones / scheduler 使 loss 与时间步相关，动态加权
+  mask_ratio: 0.3        # ✅ 仅 mask_mode=fixed 时有效 ，mask 率
+  noise_std: 0.1         # ✅ add noise 高斯噪声强度
+  # t_min: 0.05                   # ✅ 限制采样时间步下界
+  # t_max: 0.5                    # ✅ 限制采样时间步上界
   hide_last_target: true
-  predict_last_only: true
   # model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 training:
   task: linear_regression
@@ -45,3 +51,4 @@ wandb:
   name: "small-llama-no-curr"
 
 out_dir: ./checkpoints/llada
+

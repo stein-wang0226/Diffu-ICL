@@ -1,5 +1,0 @@
-wandb:
-    project: ICL-dllm
-    entity: baojian-fudan-university
-    notes: yuxiang_test
-    log_every_steps: 100
