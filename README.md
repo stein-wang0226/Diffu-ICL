@@ -1,7 +1,7 @@
 # 🧠 In-Context Learning + DLLM Integration Framework
 
 This repository provides a unified framework that combines **In-Context Learning (ICL)** with **Diffusion Language Models (DLLM)**.  
-It supports multiple model families — including **Transformer (GPT-2 / GPT-J)**, **LLaDA**, and **Dream** — enabling **fair and comparable experiments** between autoregressive and diffusion-based language models.
+It supports multiple model families — including **Transformer ( / GPT-J/Llama)**, **LLaDA**, and **Dream** — enabling **fair and comparable experiments** between autoregressive and diffusion-based language models.
 
 ---
 
@@ -28,7 +28,7 @@ in-context-learning/
     │ │ ├── init.py
     │ │ ├── generate.py 
     │ │ └── trainer.py
-    │ └── models/ modelling_llada.py # 需要import LLaDa model 类的定义
+    │ └── models/ modelling_llada.py # 这里是需要import LLaDa model 类的定义
     ├── examples/
     │ └── llada/
     │ ├── pt.py # Pretraining example
@@ -36,6 +36,7 @@ in-context-learning/
     ├── utils/ # Helper functions for DLLM
     ├── data/ # Data processing
     └── core/ # 源码
+          └── trainers/mdlm.py # diffusion train的主要逻辑
 
 
 
