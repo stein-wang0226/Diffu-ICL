@@ -69,7 +69,7 @@ def train(model, config):
     print("model:", config["model"])
     print("training:", {k: v for k, v in config["training"].items() if k not in ["curriculum"]})
     print("wandb:", config["wandb"])
-
+    print()
     training = config["training"]
     wandb_cfg = config["wandb"]
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

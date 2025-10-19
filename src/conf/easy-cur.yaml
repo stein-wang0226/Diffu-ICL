@@ -1,15 +1,15 @@
 model:
   n_dims: 20
   n_positions: 101
-  family: llada
+  family: llama
   n_embd: 256 # == d_model 含义相同， 不同model定义叫法
   d_model: 256
   mlp_ratio: 4.0
   n_layers: 12
   n_heads: 8
   pretrained: false
-  hide_last_target: True
-  predict_last_only: True
+  hide_last_target: true
+  predict_last_only: true
   # model_name_or_path: Qwen/Qwen2.5-7B-Instruct
 training:
   task: linear_regression
@@ -27,13 +27,13 @@ training:
   train_steps: 500001
   curriculum:
     dims:
-      start: 5
-      end: 5
+      start: 2
+      end: 2
       inc: 1
       interval: 4000
     points:
-      start: 10
-      end: 10
+      start: 5
+      end: 5
       inc: 1
       interval: 4000
 
@@ -42,6 +42,6 @@ wandb:
   entity: baojian-fudan-university
   notes: none
   log_every_steps: 100
-  name: "standard-llada-no-curr"
+  name: "small-llama-no-curr"
 
-out_dir: ./checkpoints/llama
+out_dir: ./checkpoints/llada

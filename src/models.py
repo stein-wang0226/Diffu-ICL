@@ -49,7 +49,7 @@ from dllm.pipelines.llada.models.modeling_llada import LLaDAModel as _LLaDABase
 #     return zs
 
 ########## AR eval hide_last_target ########
-def _combine_xs_ys(xs_b, ys_b, hide_last_target=False):
+def _combine_xs_ys(xs_b, ys_b):
     """
     Interleave (x_i, y_i) -> zs, 并把 y 扩成最后一维第一个槽位。
     xs_b: [B, T, D]
@@ -57,9 +57,6 @@ def _combine_xs_ys(xs_b, ys_b, hide_last_target=False):
     return: zs [B, 2T, D]
     """
     bsize, points, dim = xs_b.shape
-    if hide_last_target:
-        ys_b = ys_b.clone()
-        ys_b[:, -1] = 0.0  # 屏蔽最后一个 yₖ
     ys_b_wide = torch.cat(
         (ys_b.view(bsize, points, 1),
          torch.zeros(bsize, points, dim - 1, device=ys_b.device, dtype=xs_b.dtype)),
@@ -80,71 +77,6 @@ log = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
 
 
-# ========== GPT 模型 ========== #
-
-# class TransformerModel(nn.Module):
-#     def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4, type="gpt2", mlp_ratio=4.0):
-#         super().__init__()
-#         self.mlp_ratio = mlp_ratio  # 添加 mlp_ratio 参数
-
-#         if type == "gpt2":
-#             configuration = GPT2Config(
-#                 n_positions=2 * n_positions,
-#                 n_embd=n_embd,
-#                 n_layer=n_layer,
-#                 n_head=n_head,
-#                 resid_pdrop=0.0,
-#                 embd_pdrop=0.0,
-#                 attn_pdrop=0.0,
-#                 use_cache=False,
-#             )
-#             self._backbone = GPT2Model(configuration)
-#         elif type == "gptJ":
-#             configuration = GPTJConfig(
-#                 n_positions=2 * n_positions,
-#                 n_embd=n_embd,
-#                 n_layer=n_layer,
-#                 n_head=n_head,
-#                 resid_pdrop=0.0,
-#                 embd_pdrop=0.0,
-#                 attn_pdrop=0.0,
-#                 use_cache=False,
-#             )
-#             self._backbone = GPTJModel(configuration)
-#         else:
-#             raise ValueError(f"Unsupported GPT type: {type}")
-
-#         self.name = f"{type}_embd={n_embd}_layer={n_layer}_head={n_head}"
-        
-#         self.n_positions = n_positions
-#         self.n_dims = n_dims
-
-#         self._read_in = nn.Linear(n_dims, n_embd)
-#         self._read_out = nn.Linear(n_embd, 1)
-
-#         # ===== 自动对齐维度（安全投影层）=====
-#         # 当输入维度与 GPT 的 hidden_size 不一致时使用
-#         hidden_size = self._backbone.config.hidden_size
-#         self._align_proj = nn.Linear(n_embd, hidden_size) if n_embd != hidden_size else nn.Identity()
-
-#         # self._read_out = nn.Linear(int(n_embd * mlp_ratio), 1)  # 使用 mlp_ratio 进行调整
-
-#     def forward(self, xs, ys, inds=None):
-#         if inds is None:
-#             inds = torch.arange(ys.shape[1], device=ys.device)
-#         else:
-#             inds = torch.as_tensor(inds, device=ys.device)
-
-#         zs = _combine_xs_ys(xs, ys)
-#         embeds = self._read_in(zs)
-        
-#         # 自动对齐 hidden_size
-#         embeds = self._align_proj(embeds)
-
-#         # 传入 backbone
-#         output = self._backbone(inputs_embeds=embeds).last_hidden_state
-#         prediction = self._read_out(output)
-#         return prediction[:, ::2, 0][:, inds]
 
 class TransformerModel(nn.Module):
     def __init__(self, n_dims, n_positions, n_embd=128,
@@ -289,28 +221,45 @@ class TransformerModel(nn.Module):
         # ✅ 新增，若开启 hide_last_target 且当前在 eval 模式下，隐藏最后标签 （只影响 eval）
         if self.hide_last_target and not self.training:
             ys = ys.clone()
-            ys[:, -1] = 0.0
+            ys[:,-1:] = 0.0 # # 模型在输入中看不到真实答案
+            # print("ys after mask:", ys)
 
-        zs = _combine_xs_ys(xs, ys,hide_last_target=getattr(self, "hide_last_target", False))
+
+        zs = _combine_xs_ys(xs, ys)
         zs = zs.to(device)
         embeds = self._read_in(zs)
         embeds = self._align_proj(embeds)  # 对齐 hidden_size
-        # output = self._backbone(inputs_embeds=embeds).last_hidden_state
-        # prediction = self._read_out(output)
 
-        # 兼容 AutoModel 不同接口
-        outputs = self._backbone(inputs_embeds=embeds)
-        if hasattr(outputs, "last_hidden_state"):
-            h = outputs.last_hidden_state
+        if not self.training and self.hide_last_target:
+            B, T = embeds.size(0), embeds.size(1)
+            ## 下三角因果掩码，确保 token_i 只能看到 <= i 的信息
+            attention_mask = torch.ones((B, T), device=device, dtype=torch.float32)
+            attention_mask[:, -1:] = 0  # 屏蔽最后1个
+            # print("attention_mask[0]:", attention_mask[0].int().tolist())
+
         else:
-            h = outputs[0]  # tuple fallback
-        prediction = self._read_out(h)
+            attention_mask = torch.ones((embeds.size(0), embeds.size(1)), device=device)
 
-        # ✅ 新增，若 predict_last_only=True，则只输出最后一步
+        # 手动输入 causal_mask
+        try:
+            outputs = self._backbone(inputs_embeds=embeds, attention_mask=attention_mask)
+        except TypeError:
+            # GPT2 / GPTJ 可能不接受 attention_mask=None
+            outputs = self._backbone(inputs_embeds=embeds)
+        # outputs = self._backbone(inputs_embeds=embeds)
+        
+        
+        # === 读出 ===
+        h = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]   # [B, 2T, H]
+        pred_all = self._read_out(h)[..., 0]   # [B, 2T]
+
         if self.predict_last_only:
-            return prediction[:, -1:].contiguous()
+            # 只在 x_k 位置读出（倒数第二个 token）
+            return pred_all[:, -2:-1].contiguous()   # [B, 1]
 
-        return prediction[:, ::2, 0][:, inds]
+        # 多点：在所有 x_i 位置读出
+        return pred_all[:, ::2][:, inds]             # [B, |inds|]
+
 
 # #### 原始 LLADA 双向注意力 看得到后面 tokens
 # class LLaDAICLWrapper(nn.Module):
@@ -474,7 +423,7 @@ class LLaDAICLWrapper(nn.Module):
         # ===== 屏蔽最后一个 y_k 输入 =====
         if self.hide_last_target:
             ys_for_input = ys.clone()
-            # ys_for_input[:, -1] = 0.0
+            ys_for_input[:, -1] = 0.0
         else:
             ys_for_input = ys
 
