@@ -8,6 +8,7 @@ It supports multiple model families — including **Transformer ( / GPT-J/Llama)
 ## 📂 Project Structure
 **dllm需要import的主要是/llada/models/modelling_llada 下的模型class,
 training的code 可以参考dllm.core.trainers下的逻辑自己写**
+```
 in-context-learning/
 │
 ├── src/
@@ -38,7 +39,7 @@ in-context-learning/
     └── core/ # 源码
           └── trainers/mdlm.py # diffusion train的主要逻辑
 
-
+```
 
 ✅ **Supported Models**
 - Transformer: GPT-2, GPT-J  

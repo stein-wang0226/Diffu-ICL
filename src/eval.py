@@ -99,53 +99,96 @@ def get_model_from_run(run_path,w_type='add',step=-1, only_conf=False):
 
 #     return metrics
 
+# def eval_batch(model, task_sampler, xs, xs_p=None):
+#     task = task_sampler()
+    
+#     # === 自动选择设备 ===
+#     if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm", "gptJ", "llada", "dream"]:
+#         device = "cuda"
+#     else:
+#         device = "cpu"
+
+#     model.eval()  # ✅ 确保进入推理模式
+
+#     def safe_forward(model, xs, ys, **kwargs):
+#         """
+#         通用前向封装：
+#         - 自动识别返回类型 (Tensor 或 Tuple)
+#         - 自动添加 train_mode=False
+#         """
+#         try:
+#             output = model(xs.to(device), ys.to(device), train_mode=False, **kwargs)
+#         except TypeError:
+#             # 某些旧版模型没有 train_mode 参数
+#             output = model(xs.to(device), ys.to(device), **kwargs)
+        
+#         # 若返回 (loss, pred)，仅取 pred
+#         if isinstance(output, tuple):
+#             output = output[-1]
+#         return output.detach()
+
+#     # === case 1: 整体批量评估 === #
+#     if xs_p is None:
+#         ys = task.evaluate(xs)
+#         pred = safe_forward(model, xs, ys)
+#         metrics = task.get_metric()(pred.cpu(), ys)
+
+#     # === case 2: 逐点评估 === #
+#     else:
+#         b_size, n_points, _ = xs.shape
+#         metrics = torch.zeros(b_size, n_points)
+#         for i in range(n_points):
+#             xs_comb = torch.cat((xs[:, :i, :], xs_p[:, i:, :]), dim=1)
+#             ys = task.evaluate(xs_comb)
+
+#             pred = safe_forward(model, xs_comb, ys, inds=[i])
+#             metrics[:, i] = task.get_metric()(pred.cpu(), ys)[:, i]
+
+#     model.train()  # ✅ 恢复训练状态
+#     return metrics
+
 def eval_batch(model, task_sampler, xs, xs_p=None):
     task = task_sampler()
-    
-    # === 自动选择设备 ===
-    if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm", "gptJ", "llada", "dream"]:
-        device = "cuda"
-    else:
-        device = "cpu"
-
-    model.eval()  # ✅ 确保进入推理模式
-
+    device = "cuda" if torch.cuda.is_available() else "cpu"
     def safe_forward(model, xs, ys, **kwargs):
         """
-        通用前向封装：
-        - 自动识别返回类型 (Tensor 或 Tuple)
-        - 自动添加 train_mode=False
+        通用推理前向：
+        - 自动检测模型类型（AR 或 非AR）
+        - 自动关闭 dropout / mask / noise
+        - 自动解包 (loss, pred)
         """
         try:
-            output = model(xs.to(device), ys.to(device), train_mode=False, **kwargs)
+            # 优先尝试显式 eval 模式
+            output = model(xs.to("cuda"), ys.to("cuda"), train_mode=False, **kwargs)
         except TypeError:
-            # 某些旧版模型没有 train_mode 参数
-            output = model(xs.to(device), ys.to(device), **kwargs)
-        
-        # 若返回 (loss, pred)，仅取 pred
+            # 对旧版 AR 模型（无 train_mode 参数）
+            output = model(xs.to("cuda"), ys.to("cuda"), **kwargs)
+
+        # 兼容 (loss, pred) 返回
         if isinstance(output, tuple):
             output = output[-1]
         return output.detach()
 
-    # === case 1: 整体批量评估 === #
-    if xs_p is None:
-        ys = task.evaluate(xs)
-        pred = safe_forward(model, xs, ys)
-        metrics = task.get_metric()(pred.cpu(), ys)
+    model.eval()
+    with torch.no_grad():
+        if xs_p is None:
+            # === 多点并行预测 ===
+            ys = task.evaluate(xs)
+            pred = safe_forward(model, xs, ys)
+            metrics = task.get_metric()(pred.cpu(), ys)
+        else:
+            # === 逐点评估（兼容自回归 Transformer） ===
+            b_size, n_points, _ = xs.shape
+            metrics = torch.zeros(b_size, n_points)
+            for i in range(n_points):
+                xs_comb = torch.cat((xs[:, :i, :], xs_p[:, i:, :]), dim=1)
+                ys = task.evaluate(xs_comb)
+                pred = safe_forward(model, xs_comb, ys, inds=[i])
+                metrics[:, i] = task.get_metric()(pred.cpu(), ys)[:, i]
 
-    # === case 2: 逐点评估 === #
-    else:
-        b_size, n_points, _ = xs.shape
-        metrics = torch.zeros(b_size, n_points)
-        for i in range(n_points):
-            xs_comb = torch.cat((xs[:, :i, :], xs_p[:, i:, :]), dim=1)
-            ys = task.evaluate(xs_comb)
-
-            pred = safe_forward(model, xs_comb, ys, inds=[i])
-            metrics[:, i] = task.get_metric()(pred.cpu(), ys)[:, i]
-
-    model.train()  # ✅ 恢复训练状态
+    model.train()
     return metrics
+
 
 # Functions for generating different kinds of train/test data
 # 定义数据生成策略

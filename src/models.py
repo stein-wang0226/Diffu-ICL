@@ -224,7 +224,7 @@ class TransformerModel(nn.Module):
             B, T = embeds.size(0), embeds.size(1)
             ## 下三角因果掩码，确保 token_i 只能看到 <= i 的信息
             attention_mask = torch.ones((B, T), device=device, dtype=torch.float32)
-            attention_mask[:, -1:] = 0  # 屏蔽最后1个
+            attention_mask[:, -1:] = 0  # 屏蔽最后1个token pos
         else:
             attention_mask = torch.ones((embeds.size(0), embeds.size(1)), device=device)
 
