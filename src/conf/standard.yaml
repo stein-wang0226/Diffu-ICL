@@ -1,16 +1,17 @@
 model:
   n_dims: 20
   n_positions: 101
-  family: llama
+  family: llada
   n_embd: 256 # == d_model 含义相同， 不同model定义叫法
   d_model: 256
   mlp_ratio: 4.0
   n_layers: 12
   n_heads: 8
   pretrained: false
-  hide_last_target: True
-  predict_last_only: True
-  # model_name_or_path: Qwen/Qwen2.5-7B-Instruct
+  #### diffusion config ###### 
+  mask_mode: scheduler   # ✅ 可选值: fixed / scheduler
+  loss_weight_type: ones  # ✅ loss 加权方式，可选: ones / scheduler 使 loss 与时间步相关，动态加权
+  mask_ratio: 0.3        # ✅ 仅 mask_mode=fixed 时有效 ，mask 率
 training:
   task: linear_regression
   task_kwargs: {}
@@ -37,11 +38,12 @@ training:
       inc: 2
       interval: 2000
 
-
 wandb:
   project: diffu-ICL-exp
   entity: baojian-fudan-university
   notes: none
   log_every_steps: 100
-  name: "standard-llada-mask"
-out_dir: ./checkpoints/unified_llada
+  name: "standard-llada"
+
+out_dir: ./checkpoints/llada
+

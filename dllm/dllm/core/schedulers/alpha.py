@@ -78,13 +78,26 @@ class BaseAlphaScheduler:
 # ---------------- Implementations ---------------- #
 
 
+# @dataclasses.dataclass
+# class LinearAlphaScheduler(BaseAlphaScheduler):
+#     def _alpha(self, i: torch.Tensor) -> torch.Tensor:
+#         return 1 - i
+
+#     def _alpha_derivative(self, i: torch.Tensor) -> torch.Tensor:
+#         return -torch.ones_like(i)
+
+
 @dataclasses.dataclass
 class LinearAlphaScheduler(BaseAlphaScheduler):
+    start: float = 0.0
+    end: float = 1.0
+
     def _alpha(self, i: torch.Tensor) -> torch.Tensor:
-        return 1 - i
+        start, end = self.start, self.end
+        return end - (end - start) * i.clamp(0.0, 1.0)
 
     def _alpha_derivative(self, i: torch.Tensor) -> torch.Tensor:
-        return -torch.ones_like(i)
+        return -(self.end - self.start) * torch.ones_like(i)
 
 
 @dataclasses.dataclass

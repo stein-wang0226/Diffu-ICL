@@ -16,10 +16,10 @@ class Curriculum:
             args = _to_namespace(args)
 
         # args.dims and args.points each contain start, end, inc, interval attributes
-        self.n_dims_truncated = args.dims.start  # 起始维度
+        self.n_dims_truncated = args.dims.start  # 初始化起始维度
         self.n_points = args.points.start
-        self.n_dims_schedule = args.dims
-        self.n_points_schedule = args.points
+        self.n_dims_schedule = args.dims # 
+        self.n_points_schedule = args.points 
         self.step_count = 0
 
     def update(self):

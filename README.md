@@ -234,4 +234,4 @@ If you find this repository useful, please consider citing:
 - LLaDA: Diffusion Language Model  
 - PyTorch: Core deep learning framework  
 - Weights & Biases: Logging and visualization  
-- Inspired by works on in-context learning and DLLM research.
+- Inspired by works on in-context-learning and DLLM research.

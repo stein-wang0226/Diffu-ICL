@@ -73,79 +73,8 @@ def get_model_from_run(run_path,w_type='add',step=-1, only_conf=False):
 如果没有 xs_p，直接评估并计算损失。
 如果提供了 xs_p，对测试样本逐点评估，并计算逐点评估指标。
 '''
-### 可能泄漏
-# def eval_batch(model, task_sampler, xs, xs_p=None):
-#     task = task_sampler()
-#     if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm","gptJ","llada","dream"]:
-#         device = "cuda"
-#     else:
-#         device = "cpu"
 
-#     if xs_p is None:
-#         ys = task.evaluate(xs)
-#         pred = model(xs.to(device), ys.to(device)).detach()
-#         metrics = task.get_metric()(pred.cpu(), ys)
-        
-#     else: # 逐点评估，测试数据的每个数据点逐一生成评估样本
-#         b_size, n_points, _ = xs.shape
-#         metrics = torch.zeros(b_size, n_points)
-#         #
-#         for i in range(n_points): # xs前i个(已知分布sample)  和xs_p后i个点（通过策略生成）
-#             xs_comb = torch.cat((xs[:, :i, :], xs_p[:, i:, :]), dim=1)
-#             ys = task.evaluate(xs_comb)
 
-#             pred = model(xs_comb.to(device), ys.to(device), inds=[i]).detach() # inds 指定只对组合样本中的第 i 个数据点进行预测
-#             metrics[:, i] = task.get_metric()(pred.cpu(), ys)[:, i]
-
-#     return metrics
-
-# def eval_batch(model, task_sampler, xs, xs_p=None):
-#     task = task_sampler()
-    
-#     # === 自动选择设备 ===
-#     if torch.cuda.is_available() and model.name.split("_")[0] in ["gpt2", "lstm", "gptJ", "llada", "dream"]:
-#         device = "cuda"
-#     else:
-#         device = "cpu"
-
-#     model.eval()  # ✅ 确保进入推理模式
-
-#     def safe_forward(model, xs, ys, **kwargs):
-#         """
-#         通用前向封装：
-#         - 自动识别返回类型 (Tensor 或 Tuple)
-#         - 自动添加 train_mode=False
-#         """
-#         try:
-#             output = model(xs.to(device), ys.to(device), train_mode=False, **kwargs)
-#         except TypeError:
-#             # 某些旧版模型没有 train_mode 参数
-#             output = model(xs.to(device), ys.to(device), **kwargs)
-        
-#         # 若返回 (loss, pred)，仅取 pred
-#         if isinstance(output, tuple):
-#             output = output[-1]
-#         return output.detach()
-
-#     # === case 1: 整体批量评估 === #
-#     if xs_p is None:
-#         ys = task.evaluate(xs)
-#         pred = safe_forward(model, xs, ys)
-#         metrics = task.get_metric()(pred.cpu(), ys)
-
-#     # === case 2: 逐点评估 === #
-#     else:
-#         b_size, n_points, _ = xs.shape
-#         metrics = torch.zeros(b_size, n_points)
-#         for i in range(n_points):
-#             xs_comb = torch.cat((xs[:, :i, :], xs_p[:, i:, :]), dim=1)
-#             ys = task.evaluate(xs_comb)
-
-#             pred = safe_forward(model, xs_comb, ys, inds=[i])
-#             metrics[:, i] = task.get_metric()(pred.cpu(), ys)[:, i]
-
-#     model.train()  # ✅ 恢复训练状态
-#     return metrics
 
 def eval_batch(model, task_sampler, xs, xs_p=None):
     task = task_sampler()
