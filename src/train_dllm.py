@@ -106,7 +106,6 @@ def train(model, config):
     os.makedirs(out_dir, exist_ok=True)
     state_path = os.path.join(out_dir, "state.pt")
     print(f"[Output Directory] {out_dir}")
-
     # ===== Resume 逻辑 =====
     starting_step = 0
     if os.path.exists(state_path):

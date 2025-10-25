@@ -1,7 +1,7 @@
 model:
   n_dims: 20
   n_positions: 101
-  family: dream
+  family: qwen
   n_embd: 256 # == d_model 含义相同， 不同model定义叫法
   d_model: 256
   mlp_ratio: 4.0
@@ -43,7 +43,7 @@ wandb:
   entity: baojian-fudan-university
   notes: none
   log_every_steps: 100
-  name: "standard-dream"
+  name: "standard-qwen"
 
-out_dir: ./checkpoints/dream
+out_dir: ./checkpoints/qwen
 

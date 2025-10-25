@@ -5,9 +5,12 @@ import os, sys
 
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
-# Dream 如果暂时不使用，可以先注释掉
-# from dllm.pipelines.dream.models.configuration_dream import DreamConfig
-# from dllm.pipelines.dream.models.modeling_dream import DreamModel
+import math
+
+from base_models import NeuralNetwork, ParallelNetworks
+from dllm.pipelines.dream.models.configuration_dream import DreamConfig
+from dllm.pipelines.dream.models.modeling_dream import DreamBaseModel, DreamModel
+
 from tqdm import tqdm
 from sklearn.svm import LinearSVC
 from sklearn.linear_model import LogisticRegression, Lasso
@@ -26,6 +29,10 @@ from transformers import (
     GPT2Config, GPT2Model,
     GPTJConfig, GPTJModel,
 )
+try:
+    from transformers import Qwen2Config, Qwen2Model
+except ImportError:
+    Qwen2Config, Qwen2Model = None, None
 
 # ===== LLaMA (Llama2 / Llama3 / Llama3.1 均兼容) =====
 try:
@@ -140,8 +147,6 @@ class TransformerModel(nn.Module):
                     num_attention_heads=n_head,
                     intermediate_size=int(n_embd * mlp_ratio),
                     max_position_embeddings=2 * n_positions,
-                    # rms_norm_eps=1e-5,
-                    # rope_scaling=None,
                     use_cache=False,
                 )
                 self._backbone = LlamaModel(configuration)
@@ -149,32 +154,30 @@ class TransformerModel(nn.Module):
 
         # ===== Qwen 系列 =====
         elif self.family in ["qwen", "qwen2", "qwen2.5"]:
+            # === 合并 QwenModel ===
             if pretrained:
                 model_id = model_name_or_path or {
                     "qwen": "Qwen/Qwen-7B",
                     "qwen2": "Qwen/Qwen2-7B-Instruct",
                     "qwen2.5": "Qwen/Qwen2.5-7B-Instruct",
-                }.get(self.family, None)
-                if model_id is None:
-                    raise ValueError(f"Please provide model_name_or_path for {self.family}.")
+                }.get(self.family)
                 print(f"[Loading pretrained {self.family.upper()} from {model_id}]")
                 self._backbone = AutoModel.from_pretrained(model_id)
                 n_embd = self._backbone.config.hidden_size
             else:
-                if Qwen2Config is not None:
-                    config = Qwen2Config(
-                        hidden_size=n_embd,
-                        num_hidden_layers=n_layer,
-                        num_attention_heads=n_head,
-                        intermediate_size=int(n_embd * mlp_ratio),
-                        max_position_embeddings=2 * n_positions,
-                        use_cache=False,
-                    )
-                    self._backbone = Qwen2Model(config)
-                else:
-                    print("⚠️ Qwen2Config not found, using AutoModel fallback.")
-                    self._backbone = AutoModel.from_config(AutoConfig.from_pretrained("Qwen/Qwen2.5-7B-Instruct"))
-
+                if Qwen2Config is None or Qwen2Model is None:
+                    raise ImportError("请安装 transformers>=4.40 以支持 Qwen2 系列。")
+                config = Qwen2Config(
+                    max_position_embeddings=2 * n_positions,
+                    hidden_size=n_embd,
+                    intermediate_size=int(4 * n_embd),
+                    num_hidden_layers=n_layer,
+                    num_attention_heads=n_head,
+                    num_key_value_heads=n_head,
+                    use_cache=False,
+                )
+                self._backbone = Qwen2Model(config)
+        
         else:
             raise ValueError(f"Unsupported model type: {type}")
 
@@ -238,11 +241,7 @@ class TransformerModel(nn.Module):
         h = outputs.last_hidden_state if hasattr(outputs, "last_hidden_state") else outputs[0]   # [B, 2T, H]
         pred_all = self._read_out(h)[..., 0]   # [B, 2T]
 
-        # if self.predict_last_only:
-        #     # 只在 x_k 位置读出（倒数第二个 token）
-        #     return pred_all[:, -2:-1].contiguous()   # [B, 1]
 
-        # 多点：在所有 x_i 位置读出
         return pred_all[:, ::2][:, inds]             # [B, |inds|]
 
 
@@ -574,6 +573,109 @@ class LLaDAMaskedICLWrapper(nn.Module):
 
 
 
+class DreamDlmModel(nn.Module):# 纯离散掩码：随机选若干个 y 直接替换为 mask token
+    def __init__(self, n_dims, n_positions, n_embd=128, n_layer=12, n_head=4):
+        super(DreamDlmModel, self).__init__()
+        self.family = "dream"
+        configuration = DreamConfig(
+            max_position_embeddings=2 * n_positions,
+            hidden_size=n_embd,
+            intermediate_size=4 * n_embd,
+            num_hidden_layers=n_layer,
+            num_attention_heads=n_head,
+            num_key_value_heads=n_head,
+            use_cache=False,
+        )
+        self.name = f"dream_embd={n_embd}_layer={n_layer}_head={n_head}"
+
+        self.n_positions = n_positions
+        self.n_dims = n_dims
+        self._read_in = nn.Linear(n_dims, n_embd)
+        self._backbone = DreamModel(configuration)
+        self._read_out = nn.Linear(n_embd, 1)
+        self.mask_embedding = nn.Parameter(torch.randn(1, 1, n_dims))
+
+    @staticmethod
+    def _combine(xs_b, ys_b):
+        """Interleaves the x's and the y's into a single sequence."""
+        bsize, points, dim = xs_b.shape
+        ys_b_wide = torch.cat(
+            (
+                ys_b.view(bsize, points, 1),
+                torch.zeros(bsize, points, dim - 1, device=ys_b.device),
+            ),
+            axis=2,
+        )
+        zs = torch.stack((xs_b, ys_b_wide), dim=2)
+        zs = zs.view(bsize, 2 * points, dim)
+        return zs
+
+    def _combine_infilling(self, xs_b):
+        bsize, points, dim = xs_b.shape
+        mask_embeds = self.mask_embedding.expand(bsize, points, dim)
+        zs = torch.stack((xs_b, mask_embeds), dim=2)
+        zs = zs.view(bsize, 2 * points, dim)
+        return zs
+
+    def forward(self, xs, ys, inds=None, task_type="diffusion_autoregressive"):
+        if inds is None:
+            inds = torch.arange(ys.shape[1])
+        else:
+            inds = torch.tensor(inds)
+            if max(inds) >= ys.shape[1] or min(inds) < 0:
+                raise ValueError("inds contain indices where xs and ys are not defined")
+
+        if self.family == 'dream' and task_type == "diffusion_autoregressive":# diffusion mode
+            # Implements the Masked Denoising training step for DREAM, adapted for the current framework.
+            # 1. Sample a random timestep t to determine the mask ratio
+            b_size, n_points, n_dims = xs.shape
+            t = torch.rand((b_size,), device=xs.device) # A random timestep for each sample in the batch
+            mask_ratio = torch.cos(t * math.pi / 2)
+            num_to_mask = torch.ceil(mask_ratio * n_points).long()
+
+            # 2. Create the full sequence with true ys
+            zs = self._combine(xs, ys)
+            embeds = self._read_in(zs)
+
+            # 3. For each sample, randomly mask a number of y's based on its num_to_mask
+            mask_embedding = self._read_in(self.mask_embedding.squeeze(0))
+            for i in range(b_size):
+                if num_to_mask[i] > 0:
+                    # Choose which y-positions to mask
+                    y_indices = torch.randperm(n_points, device=xs.device)[:num_to_mask[i]]
+                    # Convert to full sequence indices (y's are at odd positions)
+                    full_seq_indices = y_indices * 2 + 1
+                    embeds[i, full_seq_indices, :] = mask_embedding
+
+            # 4. Perform a single forward pass to predict the denoised sequence
+            output = self._backbone.model(inputs_embeds=embeds).last_hidden_state
+            prediction = self._read_out(output)
+
+            # 5. Return predictions for ALL y positions. The loss will be calculated on all of them.
+            return prediction[:, 0::2, 0][:, inds]
+
+        elif task_type == "autoregressive": # 单纯调用model骨架
+            zs = self._combine(xs, ys)
+            embeds = self._read_in(zs)
+            # Create and apply causal mask for AR models
+            causal_mask = torch.triu(torch.ones(embeds.shape[1], embeds.shape[1], device=embeds.device) * -1e9, diagonal=1)
+            output = self._backbone.model(inputs_embeds=embeds, attention_mask=causal_mask).last_hidden_state
+            prediction = self._read_out(output)
+            return prediction[:, ::2, 0][:, inds]  # Predict at x positions
+
+        elif task_type == "infilling":
+            zs = self._combine_infilling(xs)
+            embeds = self._read_in(zs)
+            # No causal mask for infilling
+            output = self._backbone.model(inputs_embeds=embeds).last_hidden_state
+            prediction = self._read_out(output)
+            return prediction[:, 1::2, 0][:, inds] # Predict at y (masked) positions
+
+        else:
+            raise ValueError(f"Unknown task_type: {task_type}")
+
+
+
 # ========== 构建函数 ========== #
 def build_model(conf):
     family = conf["family"]
@@ -599,38 +701,6 @@ def build_model(conf):
         return model
     
 
-    # elif family == "llada":
-    #     # ===== diffusion-based ICL model =====
-    #     mask_mode = conf.get("mask_mode", "fixed")
-    #     loss_weight_type = conf.get("loss_weight_type", "ones")
-    #     mask_ratio = conf.get("mask_ratio", 0.3)
-
-    #     # ✅ 如果启用 scheduler 模式，自动创建 LinearAlphaScheduler
-    #     if mask_mode == "scheduler":
-    #         from dllm.core.schedulers import LinearAlphaScheduler
-    #         scheduler = LinearAlphaScheduler(start=0.05, end=0.7)# 较强噪声
-    #         # scheduler =  LinearAlphaScheduler(start=0.02, end=0.5)# 极高噪
-    #         print("[Auto Scheduler] Enabled (mask_mode=scheduler)")
-    #     else:
-    #         scheduler = None
-    #         print("[Auto Scheduler] Skipped (mask_mode=fixed)")
-
-    #     # ✅ 构建 LLaDA Diffusion Wrapper
-    #     return LLaDARegressionICLWrapper(
-    #         n_dims=conf["n_dims"],
-    #         n_positions=conf["n_positions"],
-    #         n_embd=n_embd,
-    #         n_layer=n_layer,
-    #         n_head=n_head,
-    #         mlp_ratio=conf.get("mlp_ratio", 4.0),
-    #         block_group_size=conf.get("block_group_size", 1),
-    #         mask_ratio=mask_ratio,
-    #         mask_mode=mask_mode,
-    #         loss_weight_type=loss_weight_type,
-    #         scheduler=scheduler,  # ✅ 动态选择
-    #     )
-    
-
     elif family == "llada":
         return LLaDAMaskedICLWrapper(
             n_dims=conf["n_dims"],
@@ -643,9 +713,29 @@ def build_model(conf):
             loss_weight_type=conf.get("loss_weight_type", "scheduler"),
             scheduler=LinearAlphaScheduler(),
         )
+    # elif conf.family == "dream":
+    #     model = DreamDlmModel(
+    #         n_dims=conf.n_dims,
+    #         n_positions=conf.n_positions,
+    #         n_embd=conf.n_embd,
+    #         n_layer=conf.n_layer,
+    #         n_head=conf.n_head,
+    #     )
+    #     return model
+    # === Dream 系列 === ✅（关键修改）
+    elif family == "dream":
+        model = DreamDlmModel(
+            n_dims=conf["n_dims"],        # ✅ 用字典取值，而非 conf.n_dims
+            n_positions=conf["n_positions"],
+            n_embd=n_embd,
+            n_layer=n_layer,
+            n_head=n_head,
+        )
+        return model
 
     else:
         raise NotImplementedError(f"Unsupported model family: {family}")
+    return model
 
 
 

@@ -1,0 +1,21 @@
+inherit:
+    - models/standard.yaml # Or any other model config
+    - wandb.yaml
+
+model:
+    n_dims: 10 # Used as num_nodes for the graph
+    n_positions: 512 # Increased to a safe value
+    vocab_size: 50 # Increased to a safe value for random graphs
+
+training:
+    task: max_degree_prediction
+    data: eulerian
+    task_kwargs: {}
+    batch_size: 64
+    learning_rate: 0.0001
+    train_steps: 5001
+
+out_dir: ../models/graph_prediction
+
+wandb:
+    name: "graph_max_degree_toy"

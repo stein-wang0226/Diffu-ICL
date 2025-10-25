@@ -1,0 +1,5 @@
+wandb:
+    project: graph-dllm
+    entity: parryyx-fudan-university-school-of-data-science
+    notes:
+    log_every_steps: 100

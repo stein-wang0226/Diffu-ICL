@@ -1,0 +1,6 @@
+inherit: 
+    - base.yaml
+    - models/dream.yaml
+
+wander:
+    name: "dream_standard"
