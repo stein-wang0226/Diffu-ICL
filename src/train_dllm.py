@@ -4,7 +4,7 @@ import numpy as np
 import random
 import yaml
 from dllm.core.schedulers import BaseAlphaScheduler, LinearAlphaScheduler
-
+import torch.nn.functional as F
 # 确保能 import 到仓库根下的 dllm 包
 repo_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 sys.path.append(repo_root)
@@ -139,20 +139,21 @@ def train(model, config):
 
         # === 前向 & 优化 ===
         loss, output = train_step(model, xs.to(device), ys.to(device), optim, loss_func)
-        # ✅ 新增: compute train MSE (denoised reconstruction)
 
-        # === Compute train MSE (y-space reconstruction) ===
-        with torch.no_grad():
-            if hasattr(model, "_cache") and "ys_noisy" in model._cache:
-                cache = model._cache
-                ys_noisy = cache["ys_noisy"]
-                sqrt_alpha = cache["sqrt_alpha"]
-                sqrt_1m_alpha = cache["sqrt_1m_alpha"]
-                # 去噪反推 y_pred
-                y_pred = (ys_noisy.squeeze(-1) - sqrt_1m_alpha * output) / sqrt_alpha
-                train_mse = ((y_pred - ys.to(device).squeeze(-1)) ** 2).mean().item()
-            else:
-                train_mse = float("nan")  # 安全兜底
+        # # ===✅ 新增:  Compute train MSE (y-space reconstruction) ===
+        # with torch.no_grad():
+        #     if hasattr(model, "_cache") and "ys_noisy" in model._cache:
+        #         cache = model._cache
+        #         ys_noisy = cache["ys_noisy"]
+        #         sqrt_alpha = cache["sqrt_alpha"]
+        #         sqrt_1m_alpha = cache["sqrt_1m_alpha"]
+        #         # 去噪反推 y_pred
+        #         y_pred = (ys_noisy.squeeze(-1) - sqrt_1m_alpha * output) / sqrt_alpha
+        #         train_mse = ((y_pred - ys.to(device).squeeze(-1)) ** 2).mean().item()
+        #     else:
+        #         train_mse = float("nan")  # 安全兜底
+
+        train_mse = F.mse_loss(output, ys.to(device)).item()
 
 
         # === Logging ===

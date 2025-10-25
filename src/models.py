@@ -251,14 +251,190 @@ class TransformerModel(nn.Module):
 
 
 
-class LLaDARegressionICLWrapper(nn.Module):
+# class LLaDARegressionICLWrapper(nn.Module):
+#     """
+#     LLaDA for In-Context Learning (Diffusion version, ε-prediction)
+#     -----------------------------------------------------------------
+#     - 非自回归（no causal mask）
+#     - 模型目标：预测噪声 ε（而非直接预测 y）
+#     - 预测所有 y，对每个 (x_i, y_i) 都进行去噪学习
+#     - 防止 loss 假低：强化噪声比例 + 随机 α_t
+#     """
+
+#     def __init__(
+#         self,
+#         n_dims,
+#         n_positions,
+#         n_embd=256,
+#         n_layer=12,
+#         n_head=8,
+#         *,
+#         mlp_ratio=4.0,
+#         block_group_size=1,
+#         mask_ratio=0.3,
+#         mask_mode="fixed",
+#         scheduler=None,
+#         loss_weight_type="ones",
+#         noise_strength=3,  # 控制噪声强度 1/2/3
+#         **extra,
+#     ):
+#         super().__init__()
+#         self.name = "llada"
+#         self.n_positions = n_positions
+#         self.n_dims = n_dims
+#         self.mask_ratio = mask_ratio
+#         self.mask_mode = mask_mode
+#         self.loss_weight_type = loss_weight_type
+#         self.noise_strength = noise_strength
+
+#         # ✅ scheduler 范围调低，防止 α_t ≈ 1 太干净
+#         self.scheduler = scheduler 
+#         # ===== backbone config =====
+#         cfg = LLaDAConfig(
+#             n_heads=int(n_head),
+#             n_layers=int(n_layer),
+#             kv_heads=int(n_head),
+#             max_sequence_length=int(2 * n_positions),
+#             rope=True,
+#             alibi=False,
+#             use_cache=False,
+#             weight_tying=False,
+#             block_group_size=int(block_group_size),
+#         )
+#         cfg.d_model = int(n_embd)
+#         cfg.mlp_hidden_size = int(cfg.d_model * mlp_ratio)
+#         if not hasattr(cfg, "effective_n_kv_heads"):
+#             cfg.effective_n_kv_heads = getattr(cfg, "kv_heads", cfg.n_heads)
+#         if not hasattr(cfg, "n_kv_heads"):
+#             cfg.n_kv_heads = cfg.kv_heads
+
+#         self.d_model = cfg.d_model
+#         self._backbone = _LLaDABase(cfg, init_params=True)
+#         self._read_in = nn.Linear(n_dims, cfg.d_model)
+#         self._read_out = nn.Linear(cfg.d_model, 1)
+#         self._time_mlp = nn.Sequential(
+#             nn.Linear(1, cfg.d_model),
+#             nn.SiLU(),
+#             nn.Linear(cfg.d_model, cfg.d_model),
+#         )
+
+#         print(
+#             f"[LLaDA Wrapper - Diffusion ε-prediction Mode: {self.mask_mode}] "
+#             f"d_model={cfg.d_model}, mask_ratio={self.mask_ratio}"
+#         )
+
+#     # ------------------------------------------------------ #
+#     def forward(self, xs, ys, train_mode=True):
+#         """
+#         xs: [B, N, D]
+#         ys: [B, N, 1]
+#         """
+#         b, n_points, d = xs.shape
+#         device = xs.device
+
+#         # ====== Step 1: timestep采样 ======
+#         # t 越大 噪声越强
+#         eps_min = 0.2  # 防止t太小
+#         if train_mode:
+#             # ✅ 加强多样性：让模型见过高/中噪场景
+#             # t_scalar = (torch.rand(b, device=device) ** 0.3) * (1 - eps_min) + eps_min
+#             # 可选强化：高噪采样
+#             t_scalar = (torch.rand(b, device=device) ** 2.0) * (1 - eps_min) + eps_min
+
+#         else:
+#             # eval 使用高噪（近全噪）以测试泛化
+#             t_scalar = torch.ones(b, device=device) * (1 - eps_min)
+
+#         # ===== Step 2: compute α_t =====
+#         if self.scheduler is None:
+#             # 随机 mask ratio → 保证噪声多样性, alpha_t 越小， noise  越大
+#             # alpha_t = torch.rand(b, 1, device=device) * 0.5 + 0.2  # [0.2, 0.7] 强噪
+#             alpha_t = torch.rand(b, 1, device=device) * 0.2 + 0.05  # [0.05, 0.55] 更强噪
+#         else:
+#             alpha_t = self.scheduler(t_scalar).unsqueeze(1)
+
+#         sqrt_alpha = alpha_t.sqrt()
+        
+#         sqrt_1m_alpha = (1 - alpha_t).sqrt()
+#         # ===== Step 3: forward diffusion =====
+#         eps_true = torch.randn_like(ys) * self.noise_strength
+
+#         if train_mode:
+#             # 训练/ eval：加入真实y构造带噪目标
+#             ys_noisy = sqrt_alpha * ys + sqrt_1m_alpha * eps_true  # y_t
+#         else:
+#             # 修正：推理：纯噪声输入，不依赖真实y
+#             ys_noisy = sqrt_1m_alpha * eps_true  # y_t = noise only
+
+
+#         self._cache = {
+#             "ys_noisy": ys_noisy.detach(),
+#             "alpha_t": alpha_t.detach(),
+#             "sqrt_alpha": sqrt_alpha.detach(),
+#             "sqrt_1m_alpha": sqrt_1m_alpha.detach(),
+#             "eps_true": eps_true.detach(),
+#         }
+#         # ===== Step 4: 构建输入序列 =====
+#         ys_wide = torch.cat(
+#             [ys_noisy.unsqueeze(-1), torch.zeros(b, n_points, d - 1, device=device)],
+#             dim=2,
+#         )
+#         zs = torch.stack([xs, ys_wide], dim=2).view(b, 2 * n_points, d)
+
+#         # ===== Step 5: embedding =====
+#         embeds = self._read_in(zs)
+#         t_expand = t_scalar.view(b, 1, 1).expand(b, 2 * n_points, 1)
+#         embeds = embeds + self._time_mlp(t_expand)
+
+#         # ===== Step 6: backbone forward =====
+#         dummy_input_ids = torch.zeros(
+#             b, 2 * n_points, dtype=torch.long, device=device
+#         )
+#         out = self._backbone(
+#             input_ids=dummy_input_ids,
+#             input_embeddings=embeds,
+#             output_hidden_states=True,
+#         )
+#         h = out.hidden_states[-1]
+
+#         # 每隔一个点（即x）预测对应的噪声
+#         pred_eps = self._read_out(h)[:, ::2, 0]  # [B, N]
+#         # ===== Step 7: Training =====
+#         if train_mode:
+#             eps_true_flat = eps_true.squeeze(-1)
+#             if self.loss_weight_type == "scheduler" and self.scheduler is not None:
+#                 w_t = self.scheduler.weight(t_scalar).unsqueeze(1)
+#                 # loss = ((pred_eps - eps_true_flat) ** 2 * w_t).mean()
+#                 loss = ((pred_eps - eps_true_flat) ** 2 * (1 - alpha_t)).mean()
+#             else:
+#                 loss = (pred_eps - eps_true_flat).square().mean()
+
+#             # ✅ 附加安全检查（防止假低）
+#             with torch.no_grad():
+#                 corr = torch.corrcoef(
+#                     torch.stack([ys_noisy.view(-1), ys.view(-1)])
+#                 )[0, 1]
+
+#                 step = getattr(self, "train_step", None)  # 🧩 显式获取训练步数
+#                 if corr.item() > 0.95 and step is not None and step % 100 == 0:
+#                     print(f"[Warning] y_noisy ~ y (corr={corr.item():.3f}) → noise too weak.")
+#             return loss, pred_eps
+        
+#         # ===== Step 8: Evaluation =====
+#         # 使用预测噪声反推 y
+#         y_pred = (ys_noisy.squeeze(-1) - sqrt_1m_alpha * pred_eps) / sqrt_alpha
+#         return y_pred
+
+
+
+class LLaDAMaskedICLWrapper(nn.Module):
     """
-    LLaDA for In-Context Learning (Diffusion version, ε-prediction)
-    -----------------------------------------------------------------
-    - 非自回归（no causal mask）
-    - 模型目标：预测噪声 ε（而非直接预测 y）
-    - 预测所有 y，对每个 (x_i, y_i) 都进行去噪学习
-    - 防止 loss 假低：强化噪声比例 + 随机 α_t
+    LLaDA Masked Diffusion ICL Wrapper (基于 MDLMTrainer 机制)
+    ----------------------------------------------------------
+    - 训练阶段：随机掩码部分 y_k，模型学习重建它们；
+    - 推理阶段：全部掩码（防止泄漏）；
+    - 无因果掩码（非自回归）；
+    - 支持 scheduler 控制掩码比例 (mask_rate = 1 - alpha_t)；
     """
 
     def __init__(
@@ -271,25 +447,20 @@ class LLaDARegressionICLWrapper(nn.Module):
         *,
         mlp_ratio=4.0,
         block_group_size=1,
-        mask_ratio=0.3,
-        mask_mode="fixed",
         scheduler=None,
-        loss_weight_type="ones",
-        noise_strength=3,  # 控制噪声强度 1/2/3
+        mask_epsilon=1e-3,              # 避免 t=0
+        loss_weight_type="scheduler",   # "ones" or "scheduler"
         **extra,
     ):
         super().__init__()
-        self.name = "llada"
+        self.name = "llada_masked"
         self.n_positions = n_positions
         self.n_dims = n_dims
-        self.mask_ratio = mask_ratio
-        self.mask_mode = mask_mode
+        self.mask_epsilon = mask_epsilon
         self.loss_weight_type = loss_weight_type
-        self.noise_strength = noise_strength
+        self.scheduler = scheduler or LinearAlphaScheduler()
 
-        # ✅ scheduler 范围调低，防止 α_t ≈ 1 太干净
-        self.scheduler = scheduler 
-        # ===== backbone config =====
+        # ===== Backbone 配置 =====
         cfg = LLaDAConfig(
             n_heads=int(n_head),
             n_layers=int(n_layer),
@@ -301,131 +472,107 @@ class LLaDARegressionICLWrapper(nn.Module):
             weight_tying=False,
             block_group_size=int(block_group_size),
         )
-        cfg.d_model = int(n_embd)
-        cfg.mlp_hidden_size = int(cfg.d_model * mlp_ratio)
+
         if not hasattr(cfg, "effective_n_kv_heads"):
             cfg.effective_n_kv_heads = getattr(cfg, "kv_heads", cfg.n_heads)
         if not hasattr(cfg, "n_kv_heads"):
             cfg.n_kv_heads = cfg.kv_heads
 
+        cfg.d_model = int(n_embd)
+        cfg.mlp_hidden_size = int(cfg.d_model * mlp_ratio)
         self.d_model = cfg.d_model
+
+        # ===== 核心网络结构 =====
         self._backbone = _LLaDABase(cfg, init_params=True)
         self._read_in = nn.Linear(n_dims, cfg.d_model)
         self._read_out = nn.Linear(cfg.d_model, 1)
-        self._time_mlp = nn.Sequential(
-            nn.Linear(1, cfg.d_model),
-            nn.SiLU(),
-            nn.Linear(cfg.d_model, cfg.d_model),
-        )
 
-        print(
-            f"[LLaDA Wrapper - Diffusion ε-prediction Mode: {self.mask_mode}] "
-            f"d_model={cfg.d_model}, mask_ratio={self.mask_ratio}"
-        )
+        print(f"[LLaDA Masked Wrapper] d_model={cfg.d_model}, loss_weight={self.loss_weight_type}")
 
     # ------------------------------------------------------ #
     def forward(self, xs, ys, train_mode=True):
         """
         xs: [B, N, D]
         ys: [B, N, 1]
+        train_mode=True → 训练，返回 (loss, pred)
+        train_mode=False → 推理，返回预测 y_hat
         """
         b, n_points, d = xs.shape
         device = xs.device
 
-        # ====== Step 1: timestep采样 ======
-        # t 越大 噪声越强
-        eps_min = 0.2  # 防止t太小
+        # ===== Step 1️⃣: Sample timestep t =====
+        # t ∈ [ε,1)，控制掩码率 mask_rate = 1 - α_t
+        t_scalar = self.mask_epsilon + (1 - self.mask_epsilon) * torch.rand(b, device=device)
+        alpha_t = self.scheduler(t_scalar).unsqueeze(1)          # [B,1]
+        mask_rate = 1 - alpha_t                                  # 掩码概率
+        mask_rate_expand = mask_rate.expand(b, n_points)
+
+        # ===== Step 2️⃣: 掩码 y =====
         if train_mode:
-            # ✅ 加强多样性：让模型见过高/中噪场景
-            # t_scalar = (torch.rand(b, device=device) ** 0.3) * (1 - eps_min) + eps_min
-            # 可选强化：高噪采样
-            t_scalar = (torch.rand(b, device=device) ** 2.0) * (1 - eps_min) + eps_min
-
+            # 随机掩码部分 y（学习重建能力）
+            rand_mask = torch.rand((b, n_points), device=device)
+            masked_indices = rand_mask < mask_rate_expand
         else:
-            # eval 使用高噪（近全噪）以测试泛化
-            t_scalar = torch.ones(b, device=device) * (1 - eps_min)
+            # 🔒 推理阶段：全部掩码（防止信息泄漏）
+            masked_indices = torch.ones((b, n_points), dtype=torch.bool, device=device)
+            print(f"[Eval Mode] All y masked (mask_rate=1.0)")
 
-        # ===== Step 2: compute α_t =====
-        if self.scheduler is None:
-            # 随机 mask ratio → 保证噪声多样性, alpha_t 越小， noise  越大
-            # alpha_t = torch.rand(b, 1, device=device) * 0.5 + 0.2  # [0.2, 0.7] 强噪
-            alpha_t = torch.rand(b, 1, device=device) * 0.2 + 0.05  # [0.05, 0.55] 更强噪
-        else:
-            alpha_t = self.scheduler(t_scalar).unsqueeze(1)
+        ys_masked = ys.clone()
+        if ys_masked.dim() == 2:
+            ys_masked = ys_masked.unsqueeze(-1)   # [B, N, 1]
+        ys_masked[masked_indices.unsqueeze(-1)] = 0.0
 
-        sqrt_alpha = alpha_t.sqrt()
-        sqrt_1m_alpha = (1 - alpha_t).sqrt()
-
-        # ===== Step 3: forward diffusion =====
-        eps_true = torch.randn_like(ys) * self.noise_strength
-
-
-
-        if train_mode:
-            # 训练/ eval：加入真实y构造带噪目标
-            ys_noisy = sqrt_alpha * ys + sqrt_1m_alpha * eps_true  # y_t
-        else:
-            # 修正：推理：纯噪声输入，不依赖真实y
-            ys_noisy = sqrt_1m_alpha * eps_true  # y_t = noise only
-
-
-        self._cache = {
-            "ys_noisy": ys_noisy.detach(),
-            "alpha_t": alpha_t.detach(),
-            "sqrt_alpha": sqrt_alpha.detach(),
-            "sqrt_1m_alpha": sqrt_1m_alpha.detach(),
-            "eps_true": eps_true.detach(),
-        }
-        # ===== Step 4: 构建输入序列 =====
+        # ===== Step 3️⃣: 构建交错输入 [x1,y1,x2,y2,...] =====
         ys_wide = torch.cat(
-            [ys_noisy.unsqueeze(-1), torch.zeros(b, n_points, d - 1, device=device)],
-            dim=2,
+            [ys_masked, torch.zeros(b, n_points, d - 1, device=device)], dim=2
         )
         zs = torch.stack([xs, ys_wide], dim=2).view(b, 2 * n_points, d)
 
-        # ===== Step 5: embedding =====
+        # ===== Step 4️⃣: Embedding + 时间嵌入 =====
         embeds = self._read_in(zs)
-        t_expand = t_scalar.view(b, 1, 1).expand(b, 2 * n_points, 1)
-        embeds = embeds + self._time_mlp(t_expand)
+        time_emb = self._time_embedding(t_scalar, b, n_points, device)
+        embeds = embeds + time_emb
 
-        # ===== Step 6: backbone forward =====
-        dummy_input_ids = torch.zeros(
-            b, 2 * n_points, dtype=torch.long, device=device
-        )
+        # ===== Step 5️⃣: Backbone 前向 =====
+        dummy_input_ids = torch.zeros(b, 2 * n_points, dtype=torch.long, device=device)
         out = self._backbone(
             input_ids=dummy_input_ids,
             input_embeddings=embeds,
             output_hidden_states=True,
         )
         h = out.hidden_states[-1]
+        pred_y = self._read_out(h)[:, ::2, 0]  # [B, N]
 
-        # 每隔一个点（即x）预测对应的噪声
-        pred_eps = self._read_out(h)[:, ::2, 0]  # [B, N]
-        # ===== Step 7: Training =====
-        if train_mode:
-            eps_true_flat = eps_true.squeeze(-1)
-            if self.loss_weight_type == "scheduler" and self.scheduler is not None:
-                w_t = self.scheduler.weight(t_scalar).unsqueeze(1)
-                # loss = ((pred_eps - eps_true_flat) ** 2 * w_t).mean()
-                loss = ((pred_eps - eps_true_flat) ** 2 * (1 - alpha_t)).mean()
-            else:
-                loss = (pred_eps - eps_true_flat).square().mean()
+        # ===== Step 6️⃣: 训练或推理 =====
+        if not train_mode:
+            return pred_y  # eval 不计算 loss，直接返回预测
 
-            # ✅ 附加安全检查（防止假低）
-            with torch.no_grad():
-                corr = torch.corrcoef(
-                    torch.stack([ys_noisy.view(-1), ys.view(-1)])
-                )[0, 1]
+        # ===== Step 7️⃣: Loss 计算（仅 masked token）=====
+        target = ys.squeeze(-1)  # [B,N]
+        diff = pred_y - target
+        loss_mask = masked_indices.float()     # 只在掩码位置上计算 loss
 
-                step = getattr(self, "train_step", None)  # 🧩 显式获取训练步数
-                if corr.item() > 0.95 and step is not None and step % 100 == 0:
-                    print(f"[Warning] y_noisy ~ y (corr={corr.item():.3f}) → noise too weak.")
-            return loss, pred_eps
-        
-        # ===== Step 8: Evaluation =====
-        # 使用预测噪声反推 y
-        y_pred = (ys_noisy.squeeze(-1) - sqrt_1m_alpha * pred_eps) / sqrt_alpha
-        return y_pred
+        if self.loss_weight_type == "scheduler":
+            w_t = self.scheduler.weight(t_scalar).unsqueeze(1)
+            weighted_loss = (diff.square() * loss_mask * w_t).sum() / (loss_mask.sum() + 1e-8)
+        else:
+            weighted_loss = (diff.square() * loss_mask).sum() / (loss_mask.sum() + 1e-8)
+
+        return weighted_loss, pred_y
+
+    # ------------------------------------------------------ #
+    def _time_embedding(self, t_scalar, b, n_points, device):
+        """时间步嵌入 MLP"""
+        t_expand = t_scalar.view(b, 1, 1).expand(b, 2 * n_points, 1)
+        if not hasattr(self, "_time_mlp"):
+            self._time_mlp = nn.Sequential(
+                nn.Linear(1, self.d_model),
+                nn.SiLU(),
+                nn.Linear(self.d_model, self.d_model),
+            ).to(device)
+        return self._time_mlp(t_expand)
+
+
 
 # ========== 构建函数 ========== #
 def build_model(conf):
@@ -452,37 +599,51 @@ def build_model(conf):
         return model
     
 
+    # elif family == "llada":
+    #     # ===== diffusion-based ICL model =====
+    #     mask_mode = conf.get("mask_mode", "fixed")
+    #     loss_weight_type = conf.get("loss_weight_type", "ones")
+    #     mask_ratio = conf.get("mask_ratio", 0.3)
+
+    #     # ✅ 如果启用 scheduler 模式，自动创建 LinearAlphaScheduler
+    #     if mask_mode == "scheduler":
+    #         from dllm.core.schedulers import LinearAlphaScheduler
+    #         scheduler = LinearAlphaScheduler(start=0.05, end=0.7)# 较强噪声
+    #         # scheduler =  LinearAlphaScheduler(start=0.02, end=0.5)# 极高噪
+    #         print("[Auto Scheduler] Enabled (mask_mode=scheduler)")
+    #     else:
+    #         scheduler = None
+    #         print("[Auto Scheduler] Skipped (mask_mode=fixed)")
+
+    #     # ✅ 构建 LLaDA Diffusion Wrapper
+    #     return LLaDARegressionICLWrapper(
+    #         n_dims=conf["n_dims"],
+    #         n_positions=conf["n_positions"],
+    #         n_embd=n_embd,
+    #         n_layer=n_layer,
+    #         n_head=n_head,
+    #         mlp_ratio=conf.get("mlp_ratio", 4.0),
+    #         block_group_size=conf.get("block_group_size", 1),
+    #         mask_ratio=mask_ratio,
+    #         mask_mode=mask_mode,
+    #         loss_weight_type=loss_weight_type,
+    #         scheduler=scheduler,  # ✅ 动态选择
+    #     )
+    
+
     elif family == "llada":
-        # ===== diffusion-based ICL model =====
-        mask_mode = conf.get("mask_mode", "fixed")
-        loss_weight_type = conf.get("loss_weight_type", "ones")
-        mask_ratio = conf.get("mask_ratio", 0.3)
-
-        # ✅ 如果启用 scheduler 模式，自动创建 LinearAlphaScheduler
-        if mask_mode == "scheduler":
-            from dllm.core.schedulers import LinearAlphaScheduler
-            scheduler = LinearAlphaScheduler(start=0.05, end=0.7)# 较强噪声
-            # scheduler =  LinearAlphaScheduler(start=0.02, end=0.5)# 极高噪
-            print("[Auto Scheduler] Enabled (mask_mode=scheduler)")
-        else:
-            scheduler = None
-            print("[Auto Scheduler] Skipped (mask_mode=fixed)")
-
-        # ✅ 构建 LLaDA Diffusion Wrapper
-        return LLaDARegressionICLWrapper(
+        return LLaDAMaskedICLWrapper(
             n_dims=conf["n_dims"],
             n_positions=conf["n_positions"],
-            n_embd=n_embd,
-            n_layer=n_layer,
-            n_head=n_head,
+            n_embd=conf["n_embd"],
+            n_layer=conf["n_layers"],
+            n_head=conf["n_heads"],
             mlp_ratio=conf.get("mlp_ratio", 4.0),
             block_group_size=conf.get("block_group_size", 1),
-            mask_ratio=mask_ratio,
-            mask_mode=mask_mode,
-            loss_weight_type=loss_weight_type,
-            scheduler=scheduler,  # ✅ 动态选择
+            loss_weight_type=conf.get("loss_weight_type", "scheduler"),
+            scheduler=LinearAlphaScheduler(),
         )
-    
+
     else:
         raise NotImplementedError(f"Unsupported model family: {family}")
 

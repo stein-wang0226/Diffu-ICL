@@ -45,5 +45,5 @@ wandb:
   log_every_steps: 100
   name: "standard-llada"
 
-out_dir: ./checkpoints/llada
+out_dir: ./checkpoints/llada-mask
 
